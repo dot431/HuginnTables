@@ -1,0 +1,43 @@
+# Seed data for the BigQuery emulator started by test-db.sh.
+projects:
+  - id: huginn-test
+    datasets:
+      - id: shop
+        tables:
+          - id: orders
+            columns:
+              - name: id
+                type: INTEGER
+                mode: REQUIRED
+              - name: customer
+                type: STRING
+              - name: total
+                type: FLOAT
+              - name: paid
+                type: BOOLEAN
+              - name: tags
+                type: STRING
+                mode: REPEATED
+              - name: address
+                type: RECORD
+                fields:
+                  - name: city
+                    type: STRING
+                  - name: zip
+                    type: INTEGER
+              - name: created_at
+                type: TIMESTAMP
+            data:
+              - { id: 1, customer: "Ann", total: 12.5, paid: true, tags: ["gift", "rush"], address: { city: "Oslo", zip: 150 }, created_at: "2026-10-01T10:00:00Z" }
+              - { id: 2, customer: "Bjørn", total: 99.9, paid: false, tags: [], address: { city: "Bergen", zip: 5003 }, created_at: "2026-10-02T11:30:00Z" }
+              - { id: 3, customer: "O'Hara", total: 7.25, paid: true, tags: ["gift"], address: null, created_at: "2026-10-03T08:15:00Z" }
+      - id: analytics
+        tables:
+          - id: events
+            columns:
+              - name: name
+                type: STRING
+              - name: n
+                type: INTEGER
+            data:
+              - { name: "signup", n: 10 }

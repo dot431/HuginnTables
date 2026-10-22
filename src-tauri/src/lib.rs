@@ -181,7 +181,7 @@ async fn preview_changes(
     session_id: String,
     changes: ChangeSet,
 ) -> CmdResult<Vec<String>> {
-    state.session(&session_id).await?.preview_changes(&changes).map_err(err)
+    state.session(&session_id).await?.preview_changes(&changes).await.map_err(err)
 }
 
 #[tauri::command]

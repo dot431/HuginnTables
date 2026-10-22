@@ -13,12 +13,14 @@ fn base(driver: DriverKind) -> ConnectionConfig {
         name: "test".into(),
         driver,
         color: String::new(),
+        template: String::new(),
         host: "127.0.0.1".into(),
         port: 0,
         user: String::new(),
         database: String::new(),
         ssl_mode: SslMode::Prefer,
         file_path: String::new(),
+        uri: String::new(),
         ssh: SshConfig::default(),
         password: Some("huginn".into()),
         ssh_password: None,
@@ -269,5 +271,265 @@ async fn postgres_over_ssh_tunnel() {
     let bad = ConnectionConfig { ssh_password: Some("nope".into()), ..cfg };
     let e = Session::open("t".into(), bad).await.err().unwrap();
     assert!(format!("{e:#}").contains("authentication failed"), "{e:#}");
+    let _ = std::fs::remove_file(known_hosts);
+}
+
+// ---- Redis, MongoDB, BigQuery ------------------------------------------
+
+fn rows_of(r: &[QueryResult]) -> Vec<Vec<Option<String>>> {
+    r.iter().find(|r| r.has_rows).map(|r| r.rows.clone()).unwrap_or_default()
+}
+
+fn req(schema: &str, table: &str) -> FetchRequest {
+    FetchRequest {
+        schema: schema.into(),
+        table: table.into(),
+        limit: 100,
+        offset: 0,
+        filters: vec![],
+        raw_where: String::new(),
+        sort: None,
+        key_order: vec![],
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn redis_end_to_end() {
+    let cfg = ConnectionConfig { port: 56379, ..base(DriverKind::Redis) };
+    let s = Session::open("t".into(), cfg).await.unwrap();
+    assert!(s.info().await.server_version.starts_with("Redis 7"));
+    exec(&s, &[
+        "FLUSHALL",
+        "SET user:1 Ann",
+        "HSET user:2 name Bob age 30",
+        "RPUSH queue:jobs a b",
+        "SADD tags x y",
+        "ZADD scores 1.5 ann 2 bob",
+        "SET session:abc token EX 100",
+        "SET plain \"two words\"",
+    ]).await;
+
+    assert_eq!(s.list_schemas().await.unwrap().len(), 16);
+    let tables: Vec<String> = s.list_tables("db0").await.unwrap().into_iter().map(|t| t.name).collect();
+    assert_eq!(tables, ["*", "queue:*", "session:*", "user:*"]);
+    assert!(s.table_columns("db0", "*").await.unwrap()[0].is_primary_key);
+
+    let users = s.fetch_rows(&req("db0", "user:*")).await.unwrap().rows;
+    assert_eq!(users, vec![
+        vec![Some("user:1".into()), Some("string".into()), None, Some("Ann".into())],
+        vec![Some("user:2".into()), Some("hash".into()), None, Some(r#"{"name":"Bob","age":"30"}"#.into())],
+    ]);
+    let all = s.fetch_rows(&req("db0", "*")).await.unwrap().rows;
+    let by_key = |k: &str| all.iter().find(|r| r[0].as_deref() == Some(k)).unwrap().clone();
+    assert_eq!(by_key("scores")[3].as_deref(), Some(r#"{"ann":1.5,"bob":2.0}"#));
+    assert_eq!(by_key("queue:jobs")[3].as_deref(), Some(r#"["a","b"]"#));
+    assert!(by_key("session:abc")[2].as_deref().unwrap().parse::<i64>().unwrap() > 90);
+    assert_eq!(s.count_rows(&req("db0", "*")).await.unwrap(), 7);
+
+    let mut filtered = req("db0", "*");
+    filtered.filters = vec![Filter { column: "type".into(), op: "=".into(), value: "hash".into() }];
+    assert_eq!(s.fetch_rows(&filtered).await.unwrap().rows.len(), 1);
+    filtered.filters = vec![Filter { column: "key".into(), op: "contains".into(), value: "1".into() }];
+    assert_eq!(s.count_rows(&filtered).await.unwrap(), 1);
+    filtered.filters = vec![Filter { column: "value".into(), op: "=".into(), value: "x".into() }];
+    assert!(s.fetch_rows(&filtered).await.is_err());
+
+    let set = ChangeSet {
+        schema: "db0".into(),
+        table: "*".into(),
+        key_is_primary: true,
+        changes: vec![
+            RowChange::Update { key: vec![cv("key", Some("user:2"))], values: vec![cv("value", Some(r#"{"name":"Bobby","age":31}"#))] },
+            RowChange::Update { key: vec![cv("key", Some("session:abc"))], values: vec![cv("ttl", None)] },
+            RowChange::Update { key: vec![cv("key", Some("plain"))], values: vec![cv("key", Some("plain2"))] },
+            RowChange::Insert { values: vec![cv("key", Some("board")), cv("type", Some("zset")), cv("value", Some(r#"{"x":3}"#))] },
+            RowChange::Delete { key: vec![cv("key", Some("queue:jobs"))] },
+        ],
+    };
+    let preview = s.preview_changes(&set).await.unwrap();
+    assert!(preview.contains(&"HSET user:2 name Bobby age 31".to_string()), "{preview:?}");
+    assert_eq!(s.commit_changes(&set).await.unwrap(), 5);
+    let r = s.run_statements(&["HGET user:2 name".into(), "TTL session:abc".into(), "GET plain2".into(), "ZSCORE board x".into(), "EXISTS queue:jobs".into()]).await;
+    let vals: Vec<Option<String>> = r.iter().map(|r| r.rows[0][0].clone()).collect();
+    assert_eq!(vals, [Some("Bobby".into()), Some("-1".into()), Some("two words".into()), Some("3".into()), Some("0".into())]);
+
+    // Console: pairs, NULL replies, SELECT and errors.
+    let r = s.run_statements(&["HGETALL user:2".into()]).await;
+    assert_eq!(r[0].columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["field", "value"]);
+    assert_eq!(rows_of(&s.run_statements(&["GET missing".into()]).await), vec![vec![None]]);
+    let r = s.run_statements(&["SELECT 1".into(), "DBSIZE".into(), "SELECT 0".into(), "DBSIZE".into()]).await;
+    assert_eq!((r[1].rows[0][0].as_deref(), r[3].rows[0][0].as_deref()), (Some("0"), Some("7")));
+    assert!(s.run_statements(&["HGET".into()]).await[0].error.is_some());
+    s.close().await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn mongodb_end_to_end() {
+    let cfg = ConnectionConfig { port: 57017, user: "root".into(), database: "shop".into(), ssl_mode: SslMode::Disable, ..base(DriverKind::Mongodb) };
+    let s = Session::open("t".into(), cfg).await.unwrap();
+    let info = s.info().await;
+    assert!(info.server_version.starts_with("MongoDB 8"), "{info:?}");
+    assert_eq!(info.schema, "shop");
+    exec(&s, &[
+        "db.people.drop()",
+        "db.people_view.drop()",
+        r#"db.people.insertMany([
+            {_id: 1, name: "Ann", age: 41, tags: ["a"], joined: ISODate("2026-01-02T03:04:05Z")},
+            {_id: 2, name: "Bob", age: 29, nick: null},
+            {_id: 3, name: "O'Hara", age: 35, address: {city: "Oslo"}}
+        ])"#,
+        r#"db.runCommand({create: "people_view", viewOn: "people", pipeline: [{$match: {age: {$gt: 30}}}]})"#,
+    ]).await;
+
+    assert!(s.list_schemas().await.unwrap().contains(&"shop".to_string()));
+    let tables = s.list_tables("shop").await.unwrap();
+    assert!(tables.iter().any(|t| t.name == "people" && t.kind == "collection"));
+    assert!(tables.iter().any(|t| t.name == "people_view" && t.kind == "view"));
+    let cols = s.table_columns("shop", "people").await.unwrap();
+    let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["_id", "name", "age", "tags", "joined", "nick", "address"]);
+    assert!(cols[0].is_primary_key && cols[0].data_type == "int" && cols[2].data_type == "int");
+
+    let mut r = req("shop", "people");
+    r.sort = Some(Sort { column: "age".into(), desc: true });
+    let page = s.fetch_rows(&r).await.unwrap();
+    assert_eq!(page.rows.iter().map(|r| r[1].clone().unwrap()).collect::<Vec<_>>(), ["Ann", "O'Hara", "Bob"]);
+    assert_eq!(page.rows[0][4].as_deref(), Some(r#"ISODate("2026-01-02T03:04:05Z")"#));
+    assert_eq!(page.rows[0][3].as_deref(), Some(r#"["a"]"#));
+    assert_eq!(page.rows[1][6].as_deref(), Some(r#"{"city":"Oslo"}"#));
+
+    r.filters = vec![Filter { column: "age".into(), op: ">".into(), value: "30".into() }];
+    assert_eq!(s.count_rows(&r).await.unwrap(), 2);
+    r.filters = vec![Filter { column: "name".into(), op: "contains".into(), value: "hAr".into() }];
+    assert_eq!(s.fetch_rows(&r).await.unwrap().rows.len(), 1);
+    r.filters.clear();
+    r.raw_where = "{age: {$lt: 30}}".into();
+    assert_eq!(s.count_rows(&r).await.unwrap(), 1);
+
+    let set = ChangeSet {
+        schema: "shop".into(),
+        table: "people".into(),
+        key_is_primary: true,
+        changes: vec![
+            RowChange::Update { key: vec![cv("_id", Some("1"))], values: vec![cv("age", Some("42")), cv("tags", None)] },
+            RowChange::Insert { values: vec![cv("_id", Some("4")), cv("name", Some("123")), cv("age", Some("50"))] },
+            RowChange::Delete { key: vec![cv("_id", Some("2"))] },
+        ],
+    };
+    let preview = s.preview_changes(&set).await.unwrap();
+    assert_eq!(preview[1], r#"db.getCollection("people").updateOne({"_id":1}, {"$set":{"age":42,"tags":null}})"#);
+    assert_eq!(s.commit_changes(&set).await.unwrap(), 3);
+    // Sampled types keep numbers numeric and "123" a string.
+    let check = s.run_statements(&[
+        "db.people.countDocuments({age: {$type: 'int'}})".into(),
+        r#"db.people.countDocuments({name: "123"})"#.into(),
+        "db.people.countDocuments({_id: 2})".into(),
+    ]).await;
+    let counts: Vec<Option<String>> = check.iter().map(|r| r.rows[0][0].clone()).collect();
+    assert_eq!(counts, [Some("3".into()), Some("1".into()), Some("0".into())]);
+
+    // Console calls.
+    let r = s.run_statements(&["db.people.find({}, {name: 1}).sort({_id: -1}).limit(2)".into()]).await;
+    assert_eq!(rows_of(&r), vec![vec![Some("4".into()), Some("123".into())], vec![Some("3".into()), Some("O'Hara".into())]]);
+    let r = s.run_statements(&["db.people.aggregate([{$group: {_id: null, total: {$sum: '$age'}}}])".into()]).await;
+    assert_eq!(rows_of(&r)[0][1].as_deref(), Some("127"));
+    let r = s.run_statements(&["show collections".into(), "use admin".into(), "db.runCommand({ping: 1})".into()]).await;
+    assert!(r[0].rows.iter().any(|row| row[0].as_deref() == Some("people")));
+    assert_eq!(r[2].rows[0][0].as_deref(), Some("1"));
+    let r = s.run_statements(&["db.people.find({".into()]).await;
+    assert!(r[0].error.is_some());
+    s.close().await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn bigquery_emulator_end_to_end() {
+    let cfg = ConnectionConfig {
+        host: "http://127.0.0.1:59050".into(),
+        database: "huginn-test".into(),
+        password: None,
+        ..base(DriverKind::Bigquery)
+    };
+    let s = Session::open("t".into(), cfg).await.unwrap();
+    let info = s.info().await;
+    assert!(info.read_only);
+    assert_eq!(info.server_version, "BigQuery · huginn-test");
+    assert_eq!(s.list_schemas().await.unwrap(), ["analytics", "shop"]);
+    assert_eq!(s.list_tables("shop").await.unwrap()[0].name, "orders");
+    let cols = s.table_columns("shop", "orders").await.unwrap();
+    let types: Vec<&str> = cols.iter().map(|c| c.data_type.as_str()).collect();
+    // The emulator drops `mode` (REPEATED/REQUIRED) from table schemas; BigQuery itself reports it.
+    assert!(matches!(types[4], "ARRAY<STRING>" | "STRING"), "{types:?}");
+    assert_eq!([types[0], types[1], types[2], types[3], types[5], types[6]], ["INTEGER", "STRING", "FLOAT", "BOOLEAN", "RECORD", "TIMESTAMP"]);
+
+    let page = s.fetch_rows(&req("shop", "orders")).await.unwrap();
+    assert!(page.sql.starts_with("tabledata.list"));
+    assert_eq!(page.rows[0], vec![
+        Some("1".into()), Some("Ann".into()), Some("12.5".into()), Some("true".into()),
+        Some(r#"["gift","rush"]"#.into()), Some(r#"{"city":"Oslo","zip":150}"#.into()), Some("2026-10-01T10:00:00Z".into()),
+    ]);
+    assert_eq!(page.rows[2][5], None);
+    assert_eq!(s.count_rows(&req("shop", "orders")).await.unwrap(), 3);
+
+    let mut r = req("shop", "orders");
+    r.filters = vec![Filter { column: "customer".into(), op: "contains".into(), value: "HAR".into() }];
+    let found = s.fetch_rows(&r).await.unwrap();
+    assert_eq!(found.rows.len(), 1, "{found:?}");
+    assert_eq!(found.rows[0][1].as_deref(), Some("O'Hara"));
+    r.filters = vec![Filter { column: "total".into(), op: ">".into(), value: "10".into() }];
+    r.sort = Some(Sort { column: "total".into(), desc: true });
+    assert_eq!(s.fetch_rows(&r).await.unwrap().rows.iter().map(|r| r[0].clone().unwrap()).collect::<Vec<_>>(), ["2", "1"]);
+    assert_eq!(s.count_rows(&r).await.unwrap(), 2);
+    r.filters = vec![Filter { column: "id".into(), op: "=".into(), value: "x".into() }];
+    assert!(s.fetch_rows(&r).await.is_err());
+
+    let q = s.run_statements(&["SELECT customer, total * 2 AS doubled FROM `huginn-test.shop.orders` WHERE paid ORDER BY id".into()]).await;
+    assert!(q[0].error.is_none(), "{q:?}");
+    assert_eq!(rows_of(&q), vec![vec![Some("Ann".into()), Some("25".into())], vec![Some("O'Hara".into()), Some("14.5".into())]]);
+
+    let set = ChangeSet { schema: "shop".into(), table: "orders".into(), key_is_primary: false, changes: vec![] };
+    assert!(s.commit_changes(&set).await.is_err());
+    s.close().await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn redis_and_mongodb_over_ssh_tunnel() {
+    let known_hosts = std::env::temp_dir().join(format!("huginn-known-{}", uuid::Uuid::new_v4()));
+    // SAFETY: tests run single-threaded (--test-threads=1).
+    unsafe { std::env::set_var("HUGINN_KNOWN_HOSTS", &known_hosts) };
+    let ssh = SshConfig {
+        enabled: true,
+        host: "127.0.0.1".into(),
+        port: 52222,
+        user: "tunnel".into(),
+        auth: SshAuth::Password,
+        key_path: String::new(),
+    };
+    let redis = ConnectionConfig {
+        host: "huginn-redis".into(),
+        port: 6379,
+        ssh: ssh.clone(),
+        ssh_password: Some("huginn".into()),
+        ..base(DriverKind::Redis)
+    };
+    let s = Session::open("t".into(), redis).await.unwrap();
+    assert_eq!(rows_of(&s.run_statements(&["PING".into()]).await), vec![vec![Some("PONG".into())]]);
+    s.close().await;
+
+    let mongo = ConnectionConfig {
+        host: "huginn-mongo".into(),
+        port: 27017,
+        user: "root".into(),
+        ssl_mode: SslMode::Disable,
+        ssh,
+        ssh_password: Some("huginn".into()),
+        ..base(DriverKind::Mongodb)
+    };
+    let s = Session::open("t".into(), mongo).await.unwrap();
+    assert!(s.info().await.server_version.starts_with("MongoDB"));
+    s.close().await;
     let _ = std::fs::remove_file(known_hosts);
 }

@@ -5,13 +5,29 @@ use anyhow::{bail, Result};
 
 use crate::model::{CellValue, ChangeSet, DriverKind, FetchRequest, Filter, RowChange};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqlEngine {
+    Postgres,
+    Mysql,
+    Sqlite,
+}
+
 #[derive(Clone, Copy, Debug)]
-pub struct Dialect(pub DriverKind);
+pub struct Dialect(pub SqlEngine);
 
 impl Dialect {
+    pub fn for_driver(kind: DriverKind) -> Option<Self> {
+        match kind {
+            DriverKind::Postgres => Some(Dialect(SqlEngine::Postgres)),
+            DriverKind::Mysql => Some(Dialect(SqlEngine::Mysql)),
+            DriverKind::Sqlite => Some(Dialect(SqlEngine::Sqlite)),
+            _ => None,
+        }
+    }
+
     pub fn ident(&self, name: &str) -> String {
         match self.0 {
-            DriverKind::Mysql => format!("`{}`", name.replace('`', "``")),
+            SqlEngine::Mysql => format!("`{}`", name.replace('`', "``")),
             _ => format!("\"{}\"", name.replace('"', "\"\"")),
         }
     }
@@ -26,7 +42,7 @@ impl Dialect {
 
     pub fn literal(&self, value: &str) -> String {
         match self.0 {
-            DriverKind::Mysql => {
+            SqlEngine::Mysql => {
                 let mut out = String::with_capacity(value.len() + 2);
                 out.push('\'');
                 for ch in value.chars() {
@@ -58,23 +74,23 @@ impl Dialect {
 
     pub fn version_sql(&self) -> &'static str {
         match self.0 {
-            DriverKind::Postgres => "SHOW server_version",
-            DriverKind::Mysql => "SELECT VERSION()",
-            DriverKind::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
+            SqlEngine::Postgres => "SHOW server_version",
+            SqlEngine::Mysql => "SELECT VERSION()",
+            SqlEngine::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
         }
     }
 
     pub fn current_schema_sql(&self) -> &'static str {
         match self.0 {
-            DriverKind::Postgres => "SELECT current_schema()",
-            DriverKind::Mysql => "SELECT DATABASE()",
-            DriverKind::Sqlite => "SELECT 'main'",
+            SqlEngine::Postgres => "SELECT current_schema()",
+            SqlEngine::Mysql => "SELECT DATABASE()",
+            SqlEngine::Sqlite => "SELECT 'main'",
         }
     }
 
     pub fn databases_sql(&self) -> Option<&'static str> {
         match self.0 {
-            DriverKind::Postgres => Some(
+            SqlEngine::Postgres => Some(
                 "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY 1",
             ),
             _ => None,
@@ -83,20 +99,20 @@ impl Dialect {
 
     pub fn schemas_sql(&self) -> &'static str {
         match self.0 {
-            DriverKind::Postgres => {
+            SqlEngine::Postgres => {
                 "SELECT nspname FROM pg_namespace \
                  WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema' \
                  ORDER BY nspname = 'public' DESC, nspname"
             }
-            DriverKind::Mysql => "SHOW DATABASES",
-            DriverKind::Sqlite => "SELECT name FROM pragma_database_list ORDER BY seq",
+            SqlEngine::Mysql => "SHOW DATABASES",
+            SqlEngine::Sqlite => "SELECT name FROM pragma_database_list ORDER BY seq",
         }
     }
 
     /// Rows of (name, kind).
     pub fn tables_sql(&self, schema: &str) -> String {
         match self.0 {
-            DriverKind::Postgres => format!(
+            SqlEngine::Postgres => format!(
                 "SELECT c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view' \
                  WHEN 'f' THEN 'foreign_table' ELSE 'table' END \
                  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -104,12 +120,12 @@ impl Dialect {
                  AND NOT c.relispartition ORDER BY c.relname",
                 self.literal(schema)
             ),
-            DriverKind::Mysql => format!(
+            SqlEngine::Mysql => format!(
                 "SELECT TABLE_NAME, CASE TABLE_TYPE WHEN 'VIEW' THEN 'view' ELSE 'table' END \
                  FROM information_schema.TABLES WHERE TABLE_SCHEMA = {} ORDER BY TABLE_NAME",
                 self.literal(schema)
             ),
-            DriverKind::Sqlite => format!(
+            SqlEngine::Sqlite => format!(
                 "SELECT name, type FROM {}.sqlite_master \
                  WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
                 self.ident(schema)
@@ -120,7 +136,7 @@ impl Dialect {
     /// Rows of (name, type, nullable 'YES'/'NO', default, is_pk 'YES'/'NO').
     pub fn columns_sql(&self, schema: &str, table: &str) -> String {
         match self.0 {
-            DriverKind::Postgres => format!(
+            SqlEngine::Postgres => format!(
                 "SELECT a.attname, format_type(a.atttypid, a.atttypmod), \
                  CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, pg_get_expr(d.adbin, d.adrelid), \
                  CASE WHEN EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = a.attrelid \
@@ -130,7 +146,7 @@ impl Dialect {
                  ORDER BY a.attnum",
                 self.literal(&self.table(schema, table))
             ),
-            DriverKind::Mysql => format!(
+            SqlEngine::Mysql => format!(
                 "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, \
                  CASE WHEN COLUMN_KEY = 'PRI' THEN 'YES' ELSE 'NO' END \
                  FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} \
@@ -138,7 +154,7 @@ impl Dialect {
                 self.literal(schema),
                 self.literal(table)
             ),
-            DriverKind::Sqlite => format!(
+            SqlEngine::Sqlite => format!(
                 "SELECT name, type, CASE WHEN \"notnull\" THEN 'NO' ELSE 'YES' END, dflt_value, \
                  CASE WHEN pk > 0 THEN 'YES' ELSE 'NO' END \
                  FROM pragma_table_info({}, {}) ORDER BY cid",
@@ -151,19 +167,19 @@ impl Dialect {
     /// Rows of (table, column) for every table in a schema, for autocomplete.
     pub fn schema_columns_sql(&self, schema: &str) -> String {
         match self.0 {
-            DriverKind::Postgres => format!(
+            SqlEngine::Postgres => format!(
                 "SELECT c.relname, a.attname FROM pg_attribute a \
                  JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
                  WHERE n.nspname = {} AND c.relkind IN ('r','p','v','m','f') AND a.attnum > 0 \
                  AND NOT a.attisdropped ORDER BY c.relname, a.attnum",
                 self.literal(schema)
             ),
-            DriverKind::Mysql => format!(
+            SqlEngine::Mysql => format!(
                 "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS \
                  WHERE TABLE_SCHEMA = {} ORDER BY TABLE_NAME, ORDINAL_POSITION",
                 self.literal(schema)
             ),
-            DriverKind::Sqlite => format!(
+            SqlEngine::Sqlite => format!(
                 "SELECT m.name, p.name FROM {}.sqlite_master m, pragma_table_info(m.name, {}) p \
                  WHERE m.type IN ('table','view') ORDER BY m.name, p.cid",
                 self.ident(schema),
@@ -176,7 +192,7 @@ impl Dialect {
 
     fn text_expr(&self, column: &str) -> String {
         match self.0 {
-            DriverKind::Postgres => format!("{}::text", self.ident(column)),
+            SqlEngine::Postgres => format!("{}::text", self.ident(column)),
             _ => self.ident(column),
         }
     }
@@ -184,7 +200,7 @@ impl Dialect {
     fn filter_sql(&self, f: &Filter) -> Result<String> {
         let col = self.ident(&f.column);
         let like = match self.0 {
-            DriverKind::Postgres => "ILIKE",
+            SqlEngine::Postgres => "ILIKE",
             _ => "LIKE",
         };
         let v = self.literal(&f.value);
@@ -287,15 +303,15 @@ impl Dialect {
             return (cond.to_string(), "");
         }
         match self.0 {
-            DriverKind::Postgres => (
+            SqlEngine::Postgres => (
                 format!("ctid = (SELECT ctid FROM {table} WHERE {cond} LIMIT 1)"),
                 "",
             ),
-            DriverKind::Sqlite => (
+            SqlEngine::Sqlite => (
                 format!("rowid = (SELECT rowid FROM {table} WHERE {cond} LIMIT 1)"),
                 "",
             ),
-            DriverKind::Mysql => (cond.to_string(), " LIMIT 1"),
+            SqlEngine::Mysql => (cond.to_string(), " LIMIT 1"),
         }
     }
 
@@ -307,7 +323,7 @@ impl Dialect {
                 RowChange::Insert { values } => {
                     if values.is_empty() {
                         out.push(match self.0 {
-                            DriverKind::Mysql => format!("INSERT INTO {table} () VALUES ()"),
+                            SqlEngine::Mysql => format!("INSERT INTO {table} () VALUES ()"),
                             _ => format!("INSERT INTO {table} DEFAULT VALUES"),
                         });
                     } else {
@@ -363,8 +379,8 @@ mod tests {
 
     #[test]
     fn quoting() {
-        let pg = Dialect(DriverKind::Postgres);
-        let my = Dialect(DriverKind::Mysql);
+        let pg = Dialect(SqlEngine::Postgres);
+        let my = Dialect(SqlEngine::Mysql);
         assert_eq!(pg.ident("we\"ird"), "\"we\"\"ird\"");
         assert_eq!(my.ident("we`ird"), "`we``ird`");
         assert_eq!(pg.literal("it's \\"), "'it''s \\'");
@@ -373,7 +389,7 @@ mod tests {
 
     #[test]
     fn page_query() {
-        let pg = Dialect(DriverKind::Postgres);
+        let pg = Dialect(SqlEngine::Postgres);
         let req = FetchRequest {
             schema: "public".into(),
             table: "users".into(),
@@ -400,7 +416,7 @@ mod tests {
 
     #[test]
     fn changes() {
-        let my = Dialect(DriverKind::Mysql);
+        let my = Dialect(SqlEngine::Mysql);
         let set = ChangeSet {
             schema: "shop".into(),
             table: "items".into(),
@@ -420,7 +436,7 @@ mod tests {
             ]
         );
 
-        let pg = Dialect(DriverKind::Postgres);
+        let pg = Dialect(SqlEngine::Postgres);
         let set = ChangeSet {
             schema: "public".into(),
             table: "logs".into(),

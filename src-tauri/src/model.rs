@@ -6,6 +6,26 @@ pub enum DriverKind {
     Postgres,
     Mysql,
     Sqlite,
+    Redis,
+    Mongodb,
+    Bigquery,
+}
+
+impl DriverKind {
+    pub fn default_port(self) -> u16 {
+        match self {
+            DriverKind::Postgres => 5432,
+            DriverKind::Mysql => 3306,
+            DriverKind::Redis => 6379,
+            DriverKind::Mongodb => 27017,
+            DriverKind::Sqlite | DriverKind::Bigquery => 0,
+        }
+    }
+
+    /// Engines reached over TCP that can be tunnelled through SSH.
+    pub fn uses_tcp(self) -> bool {
+        !matches!(self, DriverKind::Sqlite | DriverKind::Bigquery)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -50,18 +70,27 @@ pub struct ConnectionConfig {
     pub driver: DriverKind,
     #[serde(default)]
     pub color: String,
+    /// Which preset created this connection (e.g. "aws-rds-postgres"); UI only.
+    #[serde(default)]
+    pub template: String,
+    /// For BigQuery: the API endpoint override (emulators); empty means Google.
     #[serde(default)]
     pub host: String,
     #[serde(default)]
     pub port: u16,
     #[serde(default)]
     pub user: String,
+    /// For BigQuery: the project ID.
     #[serde(default)]
     pub database: String,
     #[serde(default)]
     pub ssl_mode: SslMode,
+    /// SQLite database file, or BigQuery service-account key (empty = gcloud ADC).
     #[serde(default)]
     pub file_path: String,
+    /// MongoDB connection string; when set it replaces host/port/user.
+    #[serde(default)]
+    pub uri: String,
     #[serde(default)]
     pub ssh: SshConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +111,8 @@ pub struct SessionInfo {
     pub database: String,
     pub schema: String,
     pub server_version: String,
+    /// The engine can't edit rows from the grid (BigQuery).
+    pub read_only: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -107,6 +138,9 @@ pub struct QueryResult {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Extra information shown with the result, e.g. bytes billed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
