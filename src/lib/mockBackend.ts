@@ -98,7 +98,7 @@ const handlers: Record<string, (a: any) => unknown> = {
   test_connection: () => "17.6 (mock)",
   connect: ({ config }) => ({
     sessionId: crypto.randomUUID(), connectionId: config.id, name: config.name, driver: config.driver,
-    database: "postgres", schema: "public", serverVersion: "17.6 (mock)",
+    database: "postgres", schema: "public", serverVersion: "17.6 (mock)", readOnly: false,
   }),
   disconnect: () => undefined,
   list_databases: () => ["postgres", "analytics"],

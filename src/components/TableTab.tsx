@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Cell, ColumnInfo, errorMessage, FetchRequest, QueryResult } from "../lib/api";
+import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, QueryResult } from "../lib/api";
 import * as S from "../lib/staging";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
@@ -7,8 +7,25 @@ import { ContextMenu, MenuState, Modal, toast } from "./ui";
 
 const PAGE_SIZES = [100, 300, 1000, 5000];
 
+const RAW_FILTER: Record<DriverKind, { label: string; placeholder: string }> = {
+  postgres: { label: "WHERE", placeholder: "price > 10 AND status = 'active'" },
+  mysql: { label: "WHERE", placeholder: "price > 10 AND status = 'active'" },
+  sqlite: { label: "WHERE", placeholder: "price > 10 AND status = 'active'" },
+  bigquery: { label: "WHERE", placeholder: "total > 10 AND customer LIKE 'A%'" },
+  redis: { label: "MATCH", placeholder: "user:*:profile" },
+  mongodb: { label: "Filter", placeholder: "{ age: { $gt: 30 }, tags: 'vip' }" },
+};
+
+/** A query that opens this table in the editor, in the engine's language. */
+function openQueryText(driver: DriverKind, schema: string, table: string, result: QueryResult | null): string {
+  if (driver === "bigquery") return `SELECT * FROM \`${schema}.${table}\` LIMIT 100;`;
+  if (driver === "redis") return `SCAN 0 MATCH ${table} COUNT 100`;
+  return (result?.sql ?? `SELECT * FROM ${table} LIMIT 100`) + (driver === "mongodb" ? "" : ";");
+}
+
 export function TableTab(props: {
   sessionId: string;
+  driver: DriverKind;
   schema: string;
   table: string;
   readOnly: boolean;
@@ -211,14 +228,14 @@ export function TableTab(props: {
         <button onClick={refresh} title="Reload (⌘R)">Reload</button>
         {editable && <button onClick={addRow} title="Insert row (⌘I)">+ Row</button>}
         <button
-          onClick={() => props.onOpenQuery(result?.sql ?? `SELECT * FROM ${table} LIMIT 100`)}
-          title="Open this query in a SQL editor tab"
+          onClick={() => props.onOpenQuery(openQueryText(props.driver, schema, table, result))}
+          title="Open this table in a query editor tab"
         >
-          SQL
+          Query
         </button>
         <div className="spacer" />
-        {props.readOnly && <span className="faint">Read-only view</span>}
-        {editable && !primaryKey.length && structure.length > 0 && (
+        {props.readOnly && <span className="faint">Read-only</span>}
+        {editable && !primaryKey.length && structure.length > 0 && props.driver !== "mongodb" && (
           <span className="faint" title="Rows are matched on every column; only one matching row is changed per edit.">
             No primary key
           </span>
@@ -232,6 +249,7 @@ export function TableTab(props: {
         <FilterBar
           columns={columns}
           initial={filter}
+          raw={RAW_FILTER[props.driver]}
           onApply={(f) =>
             guard(() => {
               setOffset(0);
@@ -311,6 +329,7 @@ export function TableTab(props: {
         ) : (
           <span className="muted">
             {result ? `${result.durationMs} ms` : ""}
+            {result?.notice ? ` · ${result.notice}` : ""}
           </span>
         )}
         <div className="spacer" />

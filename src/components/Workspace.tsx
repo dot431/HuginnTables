@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, errorMessage, SessionInfo, TableInfo } from "../lib/api";
+import { api, DriverKind, errorMessage, SessionInfo, TableInfo } from "../lib/api";
 import { QueryTab } from "./QueryTab";
 import { TableTab } from "./TableTab";
 import { ContextMenu, DriverBadge, MenuState, toast, useDragSize } from "./ui";
@@ -13,7 +13,26 @@ const KIND_ICON: Record<TableInfo["kind"], string> = {
   view: "◫",
   materialized_view: "◩",
   foreign_table: "⇄",
+  keyspace: "⚿",
+  collection: "▤",
 };
+
+const EDITABLE_KINDS: TableInfo["kind"][] = ["table", "collection", "keyspace"];
+
+/** Sidebar groups per object kind. */
+const GROUPS: { label: string; kinds: TableInfo["kind"][] }[] = [
+  { label: "Keys", kinds: ["keyspace"] },
+  { label: "Collections", kinds: ["collection"] },
+  { label: "Tables", kinds: ["table", "foreign_table"] },
+  { label: "Views", kinds: ["view", "materialized_view"] },
+];
+
+const SCHEMA_LABEL: Record<DriverKind, string> = {
+  postgres: "Schema", mysql: "Database", sqlite: "Schema", redis: "Database", mongodb: "Database", bigquery: "Dataset",
+};
+
+/** Redis "tables" are key patterns; "*" reads better as "All keys". */
+const displayName = (t: { name: string }) => (t.name === "*" ? "All keys" : t.name);
 
 export function Workspace(props: { session: SessionInfo; color: string; active: boolean; onClose: () => void }) {
   const [info, setInfo] = useState(props.session);
@@ -72,7 +91,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
       return;
     }
     const id = nextId.current++;
-    setTabs((ts) => [...ts, { id, kind: "table", schema, table: t.name, readOnly: t.kind !== "table" }]);
+    setTabs((ts) => [...ts, { id, kind: "table", schema, table: t.name, readOnly: info.readOnly || !EDITABLE_KINDS.includes(t.kind) }]);
     setActiveTab(id);
   };
 
@@ -156,11 +175,20 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
     const q = search.toLowerCase();
     return tables.filter((t) => t.name.toLowerCase().includes(q));
   }, [tables, search]);
-  const plainTables = filtered.filter((t) => t.kind === "table" || t.kind === "foreign_table");
-  const views = filtered.filter((t) => t.kind === "view" || t.kind === "materialized_view");
-
-  const qualified = (t: string) =>
-    info.driver === "mysql" ? `\`${t}\`` : schema && schema !== "public" && schema !== "main" ? `"${schema}"."${t}"` : `"${t}"`;
+  const selectQuery = (t: string) => {
+    switch (info.driver) {
+      case "mysql":
+        return `SELECT * FROM \`${t}\` LIMIT 100;`;
+      case "bigquery":
+        return `SELECT * FROM \`${schema}.${t}\` LIMIT 100;`;
+      case "redis":
+        return `SCAN 0 MATCH ${t} COUNT 100`;
+      case "mongodb":
+        return `db.getCollection(${JSON.stringify(t)}).find({}).limit(100)`;
+      default:
+        return schema && schema !== "public" && schema !== "main" ? `SELECT * FROM "${schema}"."${t}" LIMIT 100;` : `SELECT * FROM "${t}" LIMIT 100;`;
+    }
+  };
 
   const tableMenu = (e: React.MouseEvent, t: TableInfo) => {
     e.preventDefault();
@@ -170,7 +198,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
       items: [
         { label: "Open", action: () => openTable(t) },
         { label: "Open in new tab", action: () => openTable(t, true) },
-        { label: "New query with SELECT", action: () => openQuery(`SELECT * FROM ${qualified(t.name)} LIMIT 100;`) },
+        { label: "New query", action: () => openQuery(selectQuery(t.name)) },
         { separator: true, label: "" },
         { label: "Copy name", action: () => navigator.clipboard.writeText(t.name) },
       ],
@@ -189,7 +217,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
         title={`${t.name} (${t.kind.replace("_", " ")})`}
       >
         <span className="ti-icon">{KIND_ICON[t.kind]}</span>
-        <span className="ti-name">{t.name}</span>
+        <span className="ti-name">{displayName(t)}</span>
       </div>
     );
   };
@@ -215,7 +243,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
             </select>
           )}
           {schemas.length > 1 && (
-            <select value={schema} onChange={(e) => changeSchema(e.target.value)} title={info.driver === "mysql" ? "Database" : "Schema"}>
+            <select value={schema} onChange={(e) => changeSchema(e.target.value)} title={SCHEMA_LABEL[info.driver]}>
               {schemas.map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
@@ -225,7 +253,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
         <input
           ref={searchRef}
           className="sidebar-search"
-          placeholder="Search tables  ⌘K"
+          placeholder={`Search ${info.driver === "redis" ? "key prefixes" : info.driver === "mongodb" ? "collections" : "tables"}  ⌘K`}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => {
@@ -240,10 +268,15 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
             </div>
           ) : (
             <>
-              {plainTables.length > 0 && <div className="group-label">Tables</div>}
-              {plainTables.map(renderItem)}
-              {views.length > 0 && <div className="group-label">Views</div>}
-              {views.map(renderItem)}
+              {GROUPS.map((g) => {
+                const items = filtered.filter((t) => g.kinds.includes(t.kind));
+                return items.length ? (
+                  <div key={g.label}>
+                    <div className="group-label">{g.label}</div>
+                    {items.map(renderItem)}
+                  </div>
+                ) : null;
+              })}
               {!tablesLoading && filtered.length === 0 && (
                 <div className="faint" style={{ padding: "10px 8px" }}>{search ? "No matches" : "No tables"}</div>
               )}
@@ -271,7 +304,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                 title={t.kind === "table" ? `${t.schema}.${t.table}` : t.title}
               >
                 <span className="faint">{t.kind === "table" ? (t.readOnly ? "◫" : "▦") : "›_"}</span>
-                <span className="tab-title">{t.kind === "table" ? t.table : t.title}</span>
+                <span className="tab-title">{t.kind === "table" ? displayName({ name: t.table }) : t.title}</span>
                 {(pending[t.id] ?? 0) > 0 && <span className="tab-dirty" title="Uncommitted changes" />}
                 <span
                   className="close"
@@ -290,7 +323,9 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
         {tabs.length === 0 && (
           <div className="welcome">
             <div>
-              <p style={{ fontSize: 15, color: "var(--text)" }}>Pick a table on the left, or start a query.</p>
+              <p style={{ fontSize: 15, color: "var(--text)" }}>
+                Pick {info.driver === "redis" ? "a key prefix" : info.driver === "mongodb" ? "a collection" : "a table"} on the left, or start a query.
+              </p>
               <p>
                 <span className="kbd">⌘T</span> new query · <span className="kbd">⌘K</span> find table ·{" "}
                 <span className="kbd">⌘W</span> close tab
@@ -304,12 +339,13 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
             {t.kind === "table" ? (
               <TableTab
                 sessionId={sessionId}
+                driver={info.driver}
                 schema={t.schema}
                 table={t.table}
                 readOnly={t.readOnly}
                 active={props.active && t.id === activeTab}
                 onPendingChange={(n) => setPending((p) => (p[t.id] === n ? p : { ...p, [t.id]: n }))}
-                onOpenQuery={(sql) => openQuery(sql + ";")}
+                onOpenQuery={openQuery}
               />
             ) : (
               <QueryTab

@@ -25,6 +25,8 @@ export function FilterBar(props: {
   columns: string[];
   initial: FilterState;
   onApply: (state: FilterState) => void;
+  /** Label and example for the free-text mode: WHERE for SQL, MATCH for Redis, a filter document for MongoDB. */
+  raw: { label: string; placeholder: string };
 }) {
   const [filters, setFilters] = useState<Filter[]>(
     props.initial.filters.length ? props.initial.filters : [{ column: props.columns[0] ?? "", op: "=", value: "" }],
@@ -56,11 +58,11 @@ export function FilterBar(props: {
     <div className="filters">
       {rawMode ? (
         <div className="filter-row">
-          <span className="muted mono">WHERE</span>
+          <span className="muted mono">{props.raw.label}</span>
           <input
             className="mono"
             autoFocus
-            placeholder="price > 10 AND status = 'active'"
+            placeholder={props.raw.placeholder}
             value={rawWhere}
             onChange={(e) => setRawWhere(e.target.value)}
             onKeyDown={onKey}
@@ -94,7 +96,7 @@ export function FilterBar(props: {
             {i === 0 && (
               <>
                 <button onClick={apply}>Apply</button>
-                <button className="ghost" onClick={() => setRawMode(true)}>SQL</button>
+                <button className="ghost" onClick={() => setRawMode(true)}>{props.raw.label}</button>
                 <button
                   className="ghost"
                   onClick={() => {

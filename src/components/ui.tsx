@@ -168,15 +168,17 @@ export function useDarkMode() {
   return dark;
 }
 
-const BADGE: Record<DriverKind, string> = { postgres: "Pg", mysql: "My", sqlite: "Lt" };
+const BADGE: Record<DriverKind, string> = { postgres: "Pg", mysql: "My", sqlite: "Lt", redis: "Rd", mongodb: "Mg", bigquery: "BQ" };
 
-export function DriverBadge({ driver, color, size = 36 }: { driver: DriverKind; color: string; size?: number }) {
+export function DriverBadge(props: { driver: DriverKind; color: string; mark?: string; size?: number }) {
+  const size = props.size ?? 36;
+  const text = props.mark ?? BADGE[props.driver];
   return (
     <div
       className="conn-badge"
-      style={{ background: color || "#888", width: size, height: size, fontSize: size * 0.34 }}
+      style={{ background: props.color || "#888", width: size, height: size, fontSize: size * (text.length > 2 ? 0.28 : 0.34) }}
     >
-      {BADGE[driver]}
+      {text}
     </div>
   );
 }

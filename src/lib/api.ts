@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type DriverKind = "postgres" | "mysql" | "sqlite";
+export type DriverKind = "postgres" | "mysql" | "sqlite" | "redis" | "mongodb" | "bigquery";
 export type SslMode = "disable" | "prefer" | "require" | "verifyFull";
 export type Cell = string | null;
 
@@ -18,12 +18,18 @@ export interface ConnectionConfig {
   name: string;
   driver: DriverKind;
   color: string;
+  /** Template id from lib/templates.ts, used for labels only. */
+  template: string;
+  /** BigQuery: API endpoint override (emulator); empty for Google. */
   host: string;
   port: number;
   user: string;
   database: string;
   sslMode: SslMode;
+  /** SQLite file, or BigQuery service-account key (empty = gcloud credentials). */
   filePath: string;
+  /** MongoDB connection string; replaces host/port/user when set. */
+  uri: string;
   ssh: SshConfig;
   /** Only sent when changed; otherwise the backend reads the keychain. */
   password?: string;
@@ -39,6 +45,7 @@ export interface SessionInfo {
   database: string;
   schema: string;
   serverVersion: string;
+  readOnly: boolean;
 }
 
 export interface ColumnMeta {
@@ -55,11 +62,12 @@ export interface QueryResult {
   durationMs: number;
   truncated: boolean;
   error?: string;
+  notice?: string;
 }
 
 export interface TableInfo {
   name: string;
-  kind: "table" | "view" | "materialized_view" | "foreign_table";
+  kind: "table" | "view" | "materialized_view" | "foreign_table" | "keyspace" | "collection";
 }
 
 export interface ColumnInfo {
@@ -138,13 +146,21 @@ export const api = {
     invoke<number>("commit_changes", { sessionId, changes }),
 };
 
-export const DEFAULT_PORTS: Record<DriverKind, number> = { postgres: 5432, mysql: 3306, sqlite: 0 };
+export const DEFAULT_PORTS: Record<DriverKind, number> = {
+  postgres: 5432, mysql: 3306, sqlite: 0, redis: 6379, mongodb: 27017, bigquery: 0,
+};
 
 export const DRIVER_LABELS: Record<DriverKind, string> = {
   postgres: "PostgreSQL",
   mysql: "MySQL / MariaDB",
   sqlite: "SQLite",
+  redis: "Redis",
+  mongodb: "MongoDB",
+  bigquery: "BigQuery",
 };
+
+/** Engines whose grid and editor speak SQL. */
+export const isSql = (d: DriverKind) => d === "postgres" || d === "mysql" || d === "sqlite" || d === "bigquery";
 
 export function emptyConnection(driver: DriverKind = "postgres"): ConnectionConfig {
   return {
@@ -152,12 +168,14 @@ export function emptyConnection(driver: DriverKind = "postgres"): ConnectionConf
     name: "",
     driver,
     color: "#5b8def",
-    host: driver === "sqlite" ? "" : "127.0.0.1",
+    template: driver,
+    host: driver === "sqlite" || driver === "bigquery" ? "" : "127.0.0.1",
     port: DEFAULT_PORTS[driver],
     user: driver === "postgres" ? "postgres" : driver === "mysql" ? "root" : "",
-    database: "",
-    sslMode: "prefer",
+    database: driver === "redis" ? "0" : "",
+    sslMode: driver === "redis" || driver === "mongodb" ? "disable" : "prefer",
     filePath: "",
+    uri: "",
     ssh: { enabled: false, host: "", port: 22, user: "", auth: "password", keyPath: "~/.ssh/id_ed25519" },
   };
 }
@@ -170,9 +188,19 @@ export function parseConnectionUrl(raw: string): ConnectionConfig {
     scheme.startsWith("postgres") ? "postgres"
     : scheme.startsWith("mysql") || scheme.startsWith("mariadb") ? "mysql"
     : scheme.startsWith("sqlite") || scheme === "file" ? "sqlite"
+    : scheme === "redis" || scheme === "rediss" ? "redis"
+    : scheme.startsWith("mongodb") ? "mongodb"
     : undefined;
   if (!driver) throw new Error(`Unsupported URL scheme "${scheme}"`);
   const cfg = emptyConnection(driver);
+  if (driver === "mongodb") {
+    // Keep the whole string: SRV records and options don't fit host/port fields.
+    const url = new URL(text.replace(/^[^:]+:/, "http:"));
+    if (url.password) cfg.password = decodeURIComponent(url.password);
+    cfg.uri = url.password ? text.replace(`:${url.password}@`, ":<password>@") : text;
+    cfg.name = decodeURIComponent(url.hostname.split(",")[0]);
+    return cfg;
+  }
   if (driver === "sqlite") {
     cfg.filePath = decodeURIComponent(text.replace(/^[a-z0-9+]+:(\/\/)?/i, ""));
     cfg.name = cfg.filePath.split("/").pop() ?? "SQLite";
@@ -184,7 +212,8 @@ export function parseConnectionUrl(raw: string): ConnectionConfig {
   cfg.port = url.port ? Number(url.port) : DEFAULT_PORTS[driver];
   cfg.user = decodeURIComponent(url.username) || cfg.user;
   if (url.password) cfg.password = decodeURIComponent(url.password);
-  cfg.database = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  cfg.database = decodeURIComponent(url.pathname.replace(/^\//, "")) || (driver === "redis" ? "0" : "");
+  if (scheme === "rediss") cfg.sslMode = "require";
   const ssl = url.searchParams.get("sslmode") ?? url.searchParams.get("ssl-mode");
   if (ssl) {
     const map: Record<string, SslMode> = {

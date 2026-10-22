@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorView } from "@codemirror/view";
 import { api, DriverKind, errorMessage, QueryResult } from "../lib/api";
-import { splitStatements, statementAt } from "../lib/sqlSplit";
+import { SplitMode, splitStatements, statementAt } from "../lib/sqlSplit";
 import { DataGrid } from "./DataGrid";
 import { SqlEditor, SqlEditorHandle } from "./SqlEditor";
 import { ContextMenu, MenuState, useDragSize } from "./ui";
@@ -59,7 +59,10 @@ export function QueryTab(props: {
         const failed = out.findIndex((r) => r.error);
         const lastRows = out.map((r) => r.hasRows).lastIndexOf(true);
         setCurrent(failed >= 0 ? failed : lastRows >= 0 ? lastRows : out.length - 1);
-        if (statements.some((s) => /^\s*(create|alter|drop|rename|truncate)\b/i.test(s))) props.onSchemaChanged();
+        const changesCatalog =
+          props.driver === "redis" || props.driver === "mongodb" ||
+          statements.some((s) => /^\s*(create|alter|drop|rename|truncate)\b/i.test(s));
+        if (changesCatalog) props.onSchemaChanged();
       } catch (e) {
         setResults([{ sql: statements.join(";\n"), columns: [], rows: [], hasRows: false, rowsAffected: 0, durationMs: 0, truncated: false, error: errorMessage(e) }]);
         setCurrent(0);
@@ -75,12 +78,13 @@ export function QueryTab(props: {
     (view: EditorView, all: boolean) => {
       const doc = view.state.doc.toString();
       const sel = view.state.selection.main;
-      const mysql = props.driver === "mysql";
+      const mode: SplitMode =
+        props.driver === "mysql" ? "mysql" : props.driver === "mongodb" ? "mongo" : props.driver === "redis" ? "redis" : "sql";
       let statements: string[];
-      if (all) statements = splitStatements(doc, mysql).map((s) => s.text);
-      else if (!sel.empty) statements = splitStatements(doc.slice(sel.from, sel.to), mysql).map((s) => s.text);
+      if (all) statements = splitStatements(doc, mode).map((s) => s.text);
+      else if (!sel.empty) statements = splitStatements(doc.slice(sel.from, sel.to), mode).map((s) => s.text);
       else {
-        const stmt = statementAt(doc, sel.head, mysql);
+        const stmt = statementAt(doc, sel.head, mode);
         if (stmt) view.dispatch({ selection: { anchor: stmt.from, head: stmt.to } });
         statements = stmt ? [stmt.text] : [];
       }
@@ -131,7 +135,7 @@ export function QueryTab(props: {
           </>
         )}
         <div className="spacer" />
-        <span className="faint">⌘↵ run · ⇧⌘↵ run all · ⌘. stop</span>
+        <span className="faint">{props.driver === "redis" ? "⌘↵ run line · ⇧⌘↵ run all" : "⌘↵ run · ⇧⌘↵ run all · ⌘. stop"}</span>
       </div>
       <div className="editor-host" style={{ height: results.length ? split.size : undefined, flex: results.length ? undefined : 1 }}>
         <SqlEditor
@@ -165,7 +169,7 @@ export function QueryTab(props: {
                   {result.hasRows
                     ? `${result.rows.length.toLocaleString()} row${result.rows.length === 1 ? "" : "s"}${result.truncated ? " (truncated)" : ""}`
                     : `${result.rowsAffected.toLocaleString()} affected`}{" "}
-                  · {result.durationMs} ms
+                  · {result.durationMs} ms{result.notice ? ` · ${result.notice}` : ""}
                 </span>
               )}
             </div>
@@ -209,8 +213,8 @@ export function QueryTab(props: {
               ) : (
                 <div className="message-pane">
                   <div>
-                    Query OK — {result.rowsAffected.toLocaleString()} row{result.rowsAffected === 1 ? "" : "s"} affected in{" "}
-                    {result.durationMs} ms
+                    OK — {result.rowsAffected.toLocaleString()} affected in {result.durationMs} ms
+                    {result.notice && <span className="muted"> · {result.notice}</span>}
                   </div>
                   <pre>{result.sql}</pre>
                 </div>

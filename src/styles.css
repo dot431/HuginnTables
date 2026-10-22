@@ -203,6 +203,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .color-swatches button.on { border-color: var(--text); }
 .notice { padding: 8px 10px; border-radius: 7px; font-size: 12px; white-space: pre-wrap; }
 .notice.ok { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.notice.info { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); line-height: 1.45; }
 .notice.err { background: color-mix(in srgb, var(--danger) 13%, transparent); color: var(--danger); }
 
 /* ---------- workspace ---------- */
@@ -355,3 +356,22 @@ table.plain th { font-weight: 600; color: var(--text-muted); font-size: 12px; po
 
 .spinner { width: 18px; height: 18px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- template gallery ---------- */
+
+.tpl-group { margin-bottom: 6px; }
+.tpl-group .group-label { padding-left: 2px; }
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.tpl {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 9px; text-align: left;
+  background: var(--bg-input); border: 1px solid var(--border);
+  white-space: normal;
+}
+.tpl:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-hover); }
+.tpl-mark {
+  width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+  display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 11px;
+}
+.tpl-mark.small { width: 22px; height: 22px; border-radius: 6px; font-size: 8.5px; }
+.tpl-title { font-weight: 500; line-height: 1.25; }

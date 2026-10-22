@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   api,
   ConnectionConfig,
-  DRIVER_LABELS,
   emptyConnection,
   errorMessage,
   parseConnectionUrl,
 } from "../lib/api";
+import { templateFor } from "../lib/templates";
 import { ConnectionForm } from "./ConnectionForm";
 import { ContextMenu, DriverBadge, MenuState, Modal, RavenMark, toast } from "./ui";
 
@@ -18,6 +18,15 @@ export function ConnectionsHome(props: {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<ConnectionConfig | null>(null);
+  const [pickTemplate, setPickTemplate] = useState(false);
+  const startNew = () => {
+    setPickTemplate(true);
+    setEditing(emptyConnection());
+  };
+  const edit = (c: ConnectionConfig) => {
+    setPickTemplate(false);
+    setEditing(c);
+  };
   const [importing, setImporting] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
 
@@ -28,7 +37,7 @@ export function ConnectionsHome(props: {
   const visible = useMemo(() => {
     const q = search.toLowerCase();
     return connections
-      .filter((c) => [c.name, c.host, c.database, c.filePath].some((v) => v.toLowerCase().includes(q)))
+      .filter((c) => [c.name, c.host, c.database, c.filePath, c.uri, templateFor(c).title].some((v) => (v ?? "").toLowerCase().includes(q)))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [connections, search]);
 
@@ -38,15 +47,14 @@ export function ConnectionsHome(props: {
     reload();
   };
 
-  const duplicate = (c: ConnectionConfig) =>
-    setEditing({ ...c, id: "", name: `${c.name} copy`, password: undefined });
+  const duplicate = (c: ConnectionConfig) => edit({ ...c, id: "", name: `${c.name} copy`, password: undefined });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (editing || importing) return;
       if (e.metaKey && e.key === "n") {
         e.preventDefault();
-        setEditing(emptyConnection());
+        startNew();
       }
       const current = visible.find((c) => c.id === selected);
       if (e.key === "Enter" && current) props.onConnect(current);
@@ -75,7 +83,7 @@ export function ConnectionsHome(props: {
         <div className="home-toolbar">
           <input placeholder="Search connections" value={search} onChange={(e) => setSearch(e.target.value)} />
           <button onClick={() => setImporting(true)}>Import URL…</button>
-          <button className="primary" onClick={() => setEditing(emptyConnection())}>
+          <button className="primary" onClick={startNew}>
             New Connection
           </button>
         </div>
@@ -83,8 +91,8 @@ export function ConnectionsHome(props: {
         {connections.length === 0 ? (
           <div className="conn-list empty-state">
             <h3>No connections yet</h3>
-            <p>Create one, or paste a URL like postgres://user@host:5432/db.</p>
-            <button className="primary" onClick={() => setEditing(emptyConnection())}>
+            <p>PostgreSQL, MySQL, SQLite, Redis, MongoDB and BigQuery — self-hosted, Google Cloud, AWS or Atlas.</p>
+            <button className="primary" onClick={startNew}>
               New Connection
             </button>
           </div>
@@ -104,7 +112,7 @@ export function ConnectionsHome(props: {
                     y: e.clientY,
                     items: [
                       { label: "Connect", action: () => props.onConnect(c) },
-                      { label: "Edit…", action: () => setEditing(c) },
+                      { label: "Edit…", action: () => edit(c) },
                       { label: "Duplicate", action: () => duplicate(c) },
                       { separator: true, label: "" },
                       { label: "Delete", action: () => remove(c) },
@@ -112,14 +120,11 @@ export function ConnectionsHome(props: {
                   });
                 }}
               >
-                <DriverBadge driver={c.driver} color={c.color} />
+                <DriverBadge driver={c.driver} color={c.color} mark={templateFor(c).mark} />
                 <div className="conn-meta">
                   <div className="title">{c.name}</div>
                   <div className="sub">
-                    {DRIVER_LABELS[c.driver]} ·{" "}
-                    {c.driver === "sqlite"
-                      ? c.filePath
-                      : `${c.user ? c.user + "@" : ""}${c.host}:${c.port}${c.database ? "/" + c.database : ""}`}
+                    {templateFor(c).title} · {connectionTarget(c)}
                     {c.ssh.enabled && ` · via SSH ${c.ssh.host}`}
                   </div>
                 </div>
@@ -127,7 +132,7 @@ export function ConnectionsHome(props: {
                   <div className="spinner" />
                 ) : (
                   <div className="conn-actions">
-                    <button className="ghost" onClick={(e) => (e.stopPropagation(), setEditing(c))}>
+                    <button className="ghost" onClick={(e) => (e.stopPropagation(), edit(c))}>
                       Edit
                     </button>
                     <button onClick={(e) => (e.stopPropagation(), props.onConnect(c))}>Connect</button>
@@ -145,6 +150,7 @@ export function ConnectionsHome(props: {
       {editing && (
         <ConnectionForm
           initial={editing}
+          pickTemplate={pickTemplate}
           onClose={() => setEditing(null)}
           onSaved={(cfg, connect) => {
             setEditing(null);
@@ -159,13 +165,28 @@ export function ConnectionsHome(props: {
           onClose={() => setImporting(false)}
           onParsed={(cfg) => {
             setImporting(false);
-            setEditing(cfg);
+            edit(cfg);
           }}
         />
       )}
       <ContextMenu menu={menu} onClose={() => setMenu(null)} />
     </div>
   );
+}
+
+/** Where a connection points, without secrets. */
+function connectionTarget(c: ConnectionConfig): string {
+  switch (c.driver) {
+    case "sqlite":
+      return c.filePath;
+    case "bigquery":
+      return `project ${c.database}${c.host ? ` @ ${c.host}` : ""}`;
+    case "redis":
+      return `${c.host}:${c.port} · db${c.database || 0}`;
+    case "mongodb":
+      if (c.uri) return c.uri.replace(/\/\/[^@/]*@/, "//");
+  }
+  return `${c.user ? c.user + "@" : ""}${c.host}:${c.port}${c.database ? "/" + c.database : ""}`;
 }
 
 function ImportUrl(props: { onClose: () => void; onParsed: (cfg: ConnectionConfig) => void }) {
@@ -202,7 +223,7 @@ function ImportUrl(props: { onClose: () => void; onParsed: (cfg: ConnectionConfi
         onKeyDown={(e) => e.key === "Enter" && submit()}
       />
       <p className="faint" style={{ fontSize: 12 }}>
-        Supports postgres://, postgresql://, mysql://, mariadb:// and sqlite:// URLs.
+        Supports postgres://, mysql://, mariadb://, sqlite://, redis://, rediss://, mongodb:// and mongodb+srv:// URLs.
       </p>
       {error && <div className="notice err">{error}</div>}
     </Modal>
