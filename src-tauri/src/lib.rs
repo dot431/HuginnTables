@@ -10,7 +10,8 @@ mod store;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use tauri::{Manager, State};
+use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
+use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::RwLock;
 
 use model::*;
@@ -42,12 +43,12 @@ impl AppState {
 // ---- saved connections --------------------------------------------------
 
 #[tauri::command]
-fn list_connections(state: State<'_, AppState>) -> CmdResult<Vec<ConnectionConfig>> {
+async fn list_connections(state: State<'_, AppState>) -> CmdResult<Vec<ConnectionConfig>> {
     state.store.list().map_err(err)
 }
 
 #[tauri::command]
-fn save_connection(
+async fn save_connection(
     state: State<'_, AppState>,
     config: ConnectionConfig,
 ) -> CmdResult<ConnectionConfig> {
@@ -55,7 +56,7 @@ fn save_connection(
 }
 
 #[tauri::command]
-fn delete_connection(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+async fn delete_connection(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     state.store.delete(&id).map_err(err)
 }
 
@@ -190,10 +191,66 @@ async fn commit_changes(
     state.session(&session_id).await?.commit_changes(&changes).await.map_err(err)
 }
 
+/// The default macOS menu binds ⌘W to "Close Window"; the app uses ⌘W, ⌘T and
+/// friends for tabs, so only keep the items that need native handling.
+fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let about = AboutMetadata {
+        name: Some("HuginnTables".into()),
+        comments: Some("A database client for PostgreSQL, MySQL and SQLite".into()),
+        ..Default::default()
+    };
+    Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(
+                app,
+                "HuginnTables",
+                true,
+                &[
+                    &PredefinedMenuItem::about(app, None, Some(about))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::services(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::hide(app, None)?,
+                    &PredefinedMenuItem::hide_others(app, None)?,
+                    &PredefinedMenuItem::show_all(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app,
+                "Window",
+                true,
+                &[
+                    &PredefinedMenuItem::minimize(app, None)?,
+                    &PredefinedMenuItem::maximize(app, None)?,
+                    &PredefinedMenuItem::fullscreen(app, None)?,
+                ],
+            )?,
+        ],
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .menu(app_menu)
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             app.manage(AppState {

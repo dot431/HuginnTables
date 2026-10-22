@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "huginntables",
+  "productName": "HuginnTables",
   "version": "0.1.0",
   "identifier": "com.huginn.tables",
   "build": {
@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "huginntables",
-        "width": 800,
-        "height": 600
+        "title": "HuginnTables",
+        "width": 1320,
+        "height": 840,
+        "minWidth": 900,
+        "minHeight": 560,
+        "center": true
       }
     ],
     "security": {
