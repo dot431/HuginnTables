@@ -156,6 +156,10 @@ pub struct FetchRequest {
     pub raw_where: String,
     #[serde(default)]
     pub sort: Option<Sort>,
+    /// Primary key columns. Rows are ordered by them (after `sort`) so paging
+    /// is stable and edited rows don't move after a commit.
+    #[serde(default)]
+    pub key_order: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]

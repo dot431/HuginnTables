@@ -47,7 +47,10 @@ export function TableTab(props: {
   useEffect(() => props.onPendingChange(pending), [pending]);
 
   const request = useCallback(
-    (): FetchRequest => ({ schema, table, limit, offset, filters: filter.filters, rawWhere: filter.rawWhere, sort }),
+    (cols: ColumnInfo[]): FetchRequest => ({
+      schema, table, limit, offset, filters: filter.filters, rawWhere: filter.rawWhere, sort,
+      keyOrder: cols.filter((c) => c.isPrimaryKey).map((c) => c.name),
+    }),
     [schema, table, limit, offset, filter, sort],
   );
 
@@ -55,12 +58,11 @@ export function TableTab(props: {
     const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
-    const req = request();
     try {
-      const [cols, data] = await Promise.all([
-        structure.length && !refetchColumns ? Promise.resolve(structure) : api.tableColumns(sessionId, schema, table),
-        api.fetchRows(sessionId, req),
-      ]);
+      // Columns come first: the primary key decides the row order.
+      const cols = structure.length && !refetchColumns ? structure : await api.tableColumns(sessionId, schema, table);
+      const req = request(cols);
+      const data = await api.fetchRows(sessionId, req);
       if (seq !== loadSeq.current) return;
       setStructure(cols);
       setResult(data);

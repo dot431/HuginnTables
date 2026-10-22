@@ -88,6 +88,8 @@ export interface FetchRequest {
   filters: Filter[];
   rawWhere: string;
   sort: { column: string; desc: boolean } | null;
+  /** Primary key columns, used as the default order and as a tiebreaker. */
+  keyOrder: string[];
 }
 
 export interface CellValue {

@@ -72,6 +72,7 @@ async fn exercise(s: &Session, schema: &str) {
         filters: vec![],
         raw_where: String::new(),
         sort: Some(Sort { column: "id".into(), desc: false }),
+        key_order: vec!["id".into()],
     };
     let page = s.fetch_rows(&req).await.unwrap();
     assert_eq!(page.rows, vec![

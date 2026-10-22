@@ -236,12 +236,17 @@ impl Dialect {
             self.table(&req.schema, &req.table),
             self.where_clause(req)?
         );
+        let mut order = Vec::new();
         if let Some(sort) = &req.sort {
-            sql.push_str(&format!(
-                " ORDER BY {} {}",
-                self.ident(&sort.column),
-                if sort.desc { "DESC" } else { "ASC" }
-            ));
+            order.push(format!("{} {}", self.ident(&sort.column), if sort.desc { "DESC" } else { "ASC" }));
+        }
+        for key in &req.key_order {
+            if req.sort.as_ref().is_none_or(|s| &s.column != key) {
+                order.push(self.ident(key));
+            }
+        }
+        if !order.is_empty() {
+            sql.push_str(&format!(" ORDER BY {}", order.join(", ")));
         }
         sql.push_str(&format!(" LIMIT {} OFFSET {}", req.limit, req.offset));
         Ok(sql)
@@ -379,11 +384,17 @@ mod tests {
                 Filter { column: "deleted_at".into(), op: "isNull".into(), value: String::new() },
             ],
             raw_where: String::new(),
-            sort: Some(Sort { column: "id".into(), desc: true }),
+            sort: Some(Sort { column: "name".into(), desc: true }),
+            key_order: vec!["id".into()],
         };
         assert_eq!(
             pg.select_page_sql(&req).unwrap(),
-            "SELECT * FROM \"public\".\"users\" WHERE \"name\"::text ILIKE '%ann%' AND \"deleted_at\" IS NULL ORDER BY \"id\" DESC LIMIT 100 OFFSET 200"
+            "SELECT * FROM \"public\".\"users\" WHERE \"name\"::text ILIKE '%ann%' AND \"deleted_at\" IS NULL ORDER BY \"name\" DESC, \"id\" LIMIT 100 OFFSET 200"
+        );
+        let unsorted = FetchRequest { sort: None, filters: vec![], ..req };
+        assert_eq!(
+            pg.select_page_sql(&unsorted).unwrap(),
+            "SELECT * FROM \"public\".\"users\" ORDER BY \"id\" LIMIT 100 OFFSET 200"
         );
     }
 
