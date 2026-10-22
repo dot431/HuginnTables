@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, QueryResult } from "../lib/api";
+import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult } from "../lib/api";
 import * as S from "../lib/staging";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
@@ -212,6 +212,8 @@ export function TableTab(props: {
     });
   };
 
+  const previewText = (lines: string[]) => lines.map((l) => (isSql(props.driver) ? l + ";" : l)).join("\n");
+
   const from = rows.length ? offset + 1 : 0;
   const to = offset + rows.length;
 
@@ -361,15 +363,21 @@ export function TableTab(props: {
           onClose={() => setPreview(null)}
           footer={
             <>
-              <span className="muted">Runs in a single transaction.</span>
+              <span className="muted">
+                {props.driver === "redis"
+                  ? "Runs atomically (MULTI/EXEC)."
+                  : props.driver === "mongodb"
+                    ? "Runs one change at a time; MongoDB doesn't roll back earlier ones."
+                    : "Runs in a single transaction."}
+              </span>
               <div className="spacer" />
-              <button onClick={() => navigator.clipboard.writeText(preview.map((s) => s + ";").join("\n"))}>Copy</button>
+              <button onClick={() => navigator.clipboard.writeText(previewText(preview))}>Copy</button>
               <button onClick={() => setPreview(null)}>Close</button>
               <button className="primary" onClick={() => (setPreview(null), commit())}>Commit</button>
             </>
           }
         >
-          <pre className="sql-preview">{preview.map((s) => s + ";").join("\n")}</pre>
+          <pre className="sql-preview">{previewText(preview)}</pre>
         </Modal>
       )}
     </div>

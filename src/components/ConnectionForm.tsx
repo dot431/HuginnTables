@@ -395,6 +395,7 @@ export function defaultName(cfg: ConnectionConfig): string {
       }
       break;
   }
+  if (!cfg.host) return templateFor(cfg).title;
   const db = cfg.database && cfg.driver !== "redis" ? `${cfg.database} @ ` : "";
-  return `${db}${cfg.host || "localhost"}`;
+  return `${db}${cfg.host}`;
 }

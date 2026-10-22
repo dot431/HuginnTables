@@ -162,8 +162,17 @@ fn shell_to_extjson(text: &str) -> String {
 
 /// Parses JSON5 (unquoted keys, single quotes) with shell helpers into BSON.
 pub fn parse_json5(text: &str) -> Result<Bson> {
-    let json: Json = json5::from_str(&shell_to_extjson(text)).with_context(|| format!("could not parse {text}"))?;
+    let source = shell_to_extjson(text);
+    let json: Json = match json5::from_str(&source) {
+        Ok(j) => j,
+        // macOS "smart quotes" turn ' and " into typographic quotes while typing.
+        Err(e) => json5::from_str(&straighten_quotes(&source)).map_err(|_| anyhow!("could not parse {text}: {e}"))?,
+    };
     Bson::try_from(json).map_err(|e| anyhow!("invalid Extended JSON: {e}"))
+}
+
+fn straighten_quotes(s: &str) -> String {
+    s.replace(['\u{2018}', '\u{2019}'], "'").replace(['\u{201C}', '\u{201D}'], "\"")
 }
 
 /// Parses a grid cell back into BSON, guided by the field's sampled type.
@@ -185,7 +194,11 @@ pub fn parse_cell(text: &Cell, hint: Option<&str>) -> Result<Bson> {
         Some("object") | Some("array") => parse_json5(t)?,
         // Unknown or mixed types: JSON when it parses, text otherwise.
         _ => match json5::from_str::<Json>(&shell_to_extjson(t)) {
-            Ok(Json::String(_)) | Err(_) => Bson::String(text.clone()),
+            Ok(Json::String(_)) | Err(_) => match parse_json5(t) {
+                // Typed with smart quotes but meant as an object/array.
+                Ok(b @ (Bson::Document(_) | Bson::Array(_))) => b,
+                _ => Bson::String(text.clone()),
+            },
             Ok(j) => Bson::try_from(j).unwrap_or_else(|_| Bson::String(text.clone())),
         },
     })
@@ -775,6 +788,15 @@ mod tests {
         assert_eq!(parse_cell(&Some("2.5".into()), Some("double")).unwrap(), Bson::Double(2.5));
         assert_eq!(parse_cell(&Some("{a: [1, 'x']}".into()), Some("object")).unwrap(), Bson::Document(doc! { "a": [1, "x"] }));
         assert_eq!(parse_cell(&Some("hello".into()), None).unwrap(), Bson::String("hello".into()));
+        assert_eq!(
+            parse_cell(&Some("{city: 'Bergen', zip: 5003}".into()), Some("object")).unwrap(),
+            Bson::Document(doc! { "city": "Bergen", "zip": 5003 })
+        );
+        // macOS text fields may turn quotes into typographic ones.
+        assert_eq!(
+            parse_cell(&Some("{city: \u{2018}Bergen\u{2019}, note: \u{201C}hi\u{201D}}".into()), Some("object")).unwrap(),
+            Bson::Document(doc! { "city": "Bergen", "note": "hi" })
+        );
         assert_eq!(parse_cell(&Some("true".into()), None).unwrap(), Bson::Boolean(true));
         assert_eq!(parse_cell(&None, Some("int")).unwrap(), Bson::Null);
         let date = render(&Bson::DateTime(bson::DateTime::from_millis(0))).unwrap();

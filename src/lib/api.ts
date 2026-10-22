@@ -223,7 +223,7 @@ export function parseConnectionUrl(raw: string): ConnectionConfig {
     };
     cfg.sslMode = map[ssl.toLowerCase()] ?? cfg.sslMode;
   }
-  cfg.name = cfg.database ? `${cfg.database} @ ${cfg.host}` : cfg.host;
+  cfg.name = cfg.database && driver !== "redis" ? `${cfg.database} @ ${cfg.host}` : cfg.host;
   return cfg;
 }
 

@@ -165,7 +165,7 @@ export function ConnectionsHome(props: {
           onClose={() => setImporting(false)}
           onParsed={(cfg) => {
             setImporting(false);
-            edit(cfg);
+            edit({ ...cfg, color: templateFor(cfg).color });
           }}
         />
       )}
