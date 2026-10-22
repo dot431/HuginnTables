@@ -44,3 +44,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

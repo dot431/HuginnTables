@@ -1,5 +1,7 @@
 mod dialect;
 #[cfg(test)]
+mod ipc_tests;
+#[cfg(test)]
 mod live_tests;
 mod drivers;
 mod model;
@@ -246,19 +248,8 @@ fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     )
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .menu(app_menu)
-        .setup(|app| {
-            let dir = app.path().app_config_dir()?;
-            app.manage(AppState {
-                store: ConnectionStore::new(dir),
-                sessions: RwLock::new(HashMap::new()),
-            });
-            Ok(())
-        })
+fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    builder
         .invoke_handler(tauri::generate_handler![
             list_connections,
             save_connection,
@@ -280,6 +271,21 @@ pub fn run() {
             preview_changes,
             commit_changes,
         ])
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    with_commands(tauri::Builder::default())
+        .plugin(tauri_plugin_dialog::init())
+        .menu(app_menu)
+        .setup(|app| {
+            let dir = app.path().app_config_dir()?;
+            app.manage(AppState {
+                store: ConnectionStore::new(dir),
+                sessions: RwLock::new(HashMap::new()),
+            });
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running HuginnTables");
 }
