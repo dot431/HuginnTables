@@ -12,8 +12,8 @@ mod store;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::RwLock;
 
 use model::*;
@@ -211,6 +211,8 @@ fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 &[
                     &PredefinedMenuItem::about(app, None, Some(about))?,
                     &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?,
+                    &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::services(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::hide(app, None)?,
@@ -278,6 +280,11 @@ pub fn run() {
     with_commands(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
         .menu(app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == "settings" {
+                let _ = app.emit("open-settings", ());
+            }
+        })
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             app.manage(AppState {

@@ -156,18 +156,6 @@ export function useDragSize(initial: number, min: number, max: number, axis: "x"
   return { size, dragging, onMouseDown };
 }
 
-export function useDarkMode() {
-  const query = "(prefers-color-scheme: dark)";
-  const [dark, setDark] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    const on = () => setDark(mq.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return dark;
-}
-
 const BADGE: Record<DriverKind, string> = { postgres: "Pg", mysql: "My", sqlite: "Lt", redis: "Rd", mongodb: "Mg", bigquery: "BQ" };
 
 export function DriverBadge(props: { driver: DriverKind; color: string; mark?: string; size?: number }) {
@@ -183,16 +171,26 @@ export function DriverBadge(props: { driver: DriverKind; color: string; mark?: s
   );
 }
 
-export function RavenMark({ size = 44 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden>
-      <rect width="64" height="64" rx="14" fill="#1f2433" />
-      <path
-        d="M14 40c6-1 10-5 13-10 3-6 8-11 15-11 4 0 7 2 8 5l5 2-5 2c-1 6-6 11-13 13l3 7h-4l-3-6c-5 1-12 1-19-2z"
-        fill="#e8ecf6"
+/** The Rune H mark. Below 48 px it switches to the small cut: heavier bars and a joined diagonal. */
+export function HuginnMark({ size = 48 }: { size?: number }) {
+  const ink = { fill: "var(--mark-ink)" };
+  return size < 48 ? (
+    <svg width={size} height={size} viewBox="80 80 352 352" aria-hidden>
+      <rect x="120" y="88" width="88" height="336" rx="20" style={ink} />
+      <rect x="304" y="88" width="88" height="336" rx="20" fill="#3A8D93" />
+      <polygon points="208,184 304,240 304,328 208,272" fill="#F0705A" />
+    </svg>
+  ) : (
+    <svg width={size} height={size} viewBox="88 88 336 336" aria-hidden>
+      <rect x="136" y="96" width="64" height="320" rx="16" style={ink} />
+      <rect x="312" y="96" width="64" height="320" rx="16" fill="#3A8D93" />
+      <polygon
+        points="216,199.4 296,246.6 296,312.6 216,265.4"
+        fill="#F0705A"
+        stroke="#F0705A"
+        strokeWidth="8"
+        strokeLinejoin="round"
       />
-      <circle cx="44" cy="24" r="1.8" fill="#1f2433" />
-      <path d="M14 46h36" stroke="#5b8def" strokeWidth="3" strokeLinecap="round" />
     </svg>
   );
 }

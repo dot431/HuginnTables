@@ -8,11 +8,12 @@ import {
 } from "../lib/api";
 import { templateFor } from "../lib/templates";
 import { ConnectionForm } from "./ConnectionForm";
-import { ContextMenu, DriverBadge, MenuState, Modal, RavenMark, toast } from "./ui";
+import { ContextMenu, DriverBadge, HuginnMark, MenuState, Modal, toast } from "./ui";
 
 export function ConnectionsHome(props: {
   connecting: string | null;
   onConnect: (cfg: ConnectionConfig) => void;
+  onOpenSettings: () => void;
 }) {
   const [connections, setConnections] = useState<ConnectionConfig[]>([]);
   const [search, setSearch] = useState("");
@@ -73,11 +74,17 @@ export function ConnectionsHome(props: {
     <div className="home">
       <div className="home-inner">
         <div className="brand">
-          <RavenMark />
+          <HuginnMark />
           <div>
-            <h1>HuginnTables</h1>
+            <h1 className="wordmark" aria-label="HuginnTables">
+              huginn<span>table</span>
+            </h1>
             <p>PostgreSQL · MySQL · SQLite</p>
           </div>
+          <div className="spacer" />
+          <button className="ghost" title="Settings (⌘,)" onClick={props.onOpenSettings}>
+            Settings
+          </button>
         </div>
 
         <div className="home-toolbar">

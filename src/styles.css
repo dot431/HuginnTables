@@ -20,11 +20,19 @@
   --deleted: rgba(214, 69, 61, 0.16);
   --shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
   --mono: "SF Mono", ui-monospace, Menlo, Monaco, "Cascadia Code", monospace;
+  --brand: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+  /* Filled controls carrying text (primary buttons, selected rows); a darker accent where needed for contrast. */
+  --accent-strong: var(--accent);
+  --on-warning: #ffffff;
+  /* Logo: the mark's left bar and the "table" half of the wordmark. */
+  --mark-ink: #12201f;
+  --wordmark-accent: #2e6e74;
   color-scheme: light;
 }
 
+/* Classic follows the system appearance; the Huginn themes are fixed. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme^="huginn-"]) {
     --bg: #1e1f22;
     --bg-sidebar: #26272b;
     --bg-elevated: #2b2c31;
@@ -41,9 +49,74 @@
     --inserted: rgba(47, 158, 91, 0.2);
     --deleted: rgba(214, 69, 61, 0.22);
     --shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    --mark-ink: #fbfaf7;
+    --wordmark-accent: #8ccbcf;
     color-scheme: dark;
   }
 }
+
+/* Brand palette: Raven Ink #12201F, Fjord Teal #3A8D93, Deep Teal #2E6E74, Ember Coral #F0705A,
+   Bone #FBFAF7, Mist #EEEBE5. Every text colour keeps at least 4.5:1 on the surfaces it sits on. */
+:root[data-theme="huginn-light"] {
+  --bg: #fbfaf7;
+  --bg-sidebar: #eeebe5;
+  --bg-elevated: #fbfaf7;
+  --bg-hover: #e3dfd8;
+  --bg-active: #d3dedb;
+  --bg-input: #ffffff;
+  --border: #ddd8cf;
+  --border-strong: #c7c0b5;
+  --text: #12201f;
+  --text-muted: #4e5b5c;
+  --text-faint: #566262;
+  --accent: #3a8d93;
+  --accent-strong: #2e6e74;
+  --accent-text: #fbfaf7;
+  --highlight: #f0705a;
+  --danger: #a53a28;
+  --success: #236b41;
+  --warning: #83560a;
+  --on-warning: #ffffff;
+  --edited: rgba(240, 160, 40, 0.2);
+  --inserted: rgba(58, 141, 147, 0.16);
+  --deleted: rgba(240, 112, 90, 0.18);
+  --shadow: 0 10px 40px rgba(18, 32, 31, 0.16);
+  --mark-ink: #12201f;
+  --wordmark-accent: #2e6e74;
+  color-scheme: light;
+}
+
+:root[data-theme="huginn-dark"] {
+  --bg: #12201f;
+  --bg-sidebar: #172826;
+  --bg-elevated: #1c2f2d;
+  --bg-hover: #243937;
+  --bg-active: #24474a;
+  --bg-input: #0d1918;
+  --border: #2a3e3c;
+  --border-strong: #3a514e;
+  --text: #fbfaf7;
+  --text-muted: #b4c0be;
+  --text-faint: #93a3a1;
+  --accent: #3a8d93;
+  --accent-strong: #2e6e74;
+  --accent-text: #fbfaf7;
+  --highlight: #f0705a;
+  --danger: #f68d79;
+  --success: #5cc08a;
+  --warning: #e3a33b;
+  --on-warning: #12201f;
+  --edited: rgba(227, 163, 59, 0.18);
+  --inserted: rgba(58, 141, 147, 0.24);
+  --deleted: rgba(240, 112, 90, 0.22);
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+  --mark-ink: #fbfaf7;
+  --wordmark-accent: #8ccbcf;
+  color-scheme: dark;
+}
+
+:root[data-theme^="huginn-"] ::selection { background: color-mix(in srgb, var(--highlight) 35%, transparent); }
+:root[data-theme^="huginn-"] .tab.active { box-shadow: inset 0 2px 0 var(--highlight); }
 
 * { box-sizing: border-box; }
 
@@ -78,8 +151,8 @@ button {
 }
 button:hover:not(:disabled) { background: var(--bg-hover); }
 button:disabled { opacity: 0.45; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+button.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-text); }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent-strong); }
 button.danger { color: var(--danger); }
 button.ghost { border-color: transparent; background: transparent; }
 button.ghost:hover:not(:disabled) { background: var(--bg-hover); }
@@ -141,6 +214,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .home-inner { width: 100%; max-width: 720px; }
 .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
 .brand h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
+.wordmark { font-family: var(--brand); font-weight: 700; letter-spacing: -0.03em; }
+.wordmark span { font-weight: 500; color: var(--wordmark-accent); }
 .brand p { margin: 2px 0 0; color: var(--text-muted); }
 .home-toolbar { display: flex; gap: 8px; margin-bottom: 14px; }
 .home-toolbar input { flex: 1; }
@@ -197,7 +272,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .segmented { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 7px; overflow: hidden; }
 .segmented button { border: 0; border-radius: 0; border-right: 1px solid var(--border-strong); background: transparent; }
 .segmented button:last-child { border-right: 0; }
-.segmented button.on { background: var(--accent); color: var(--accent-text); }
+.segmented button.on { background: var(--accent-strong); color: var(--accent-text); }
 .color-swatches { display: flex; gap: 6px; }
 .color-swatches button { width: 20px; height: 20px; border-radius: 50%; padding: 0; border: 2px solid transparent; }
 .color-swatches button.on { border-color: var(--text); }
@@ -228,7 +303,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .table-item:hover { background: var(--bg-hover); }
-.table-item.active { background: var(--accent); color: var(--accent-text); }
+.table-item.active { background: var(--accent-strong); color: var(--accent-text); }
 .table-item .ti-icon { width: 14px; text-align: center; opacity: 0.7; font-size: 11px; flex-shrink: 0; }
 .table-item .ti-name { overflow: hidden; text-overflow: ellipsis; }
 .sidebar-foot { border-top: 1px solid var(--border); padding: 6px 10px; font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
@@ -297,7 +372,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   min-height: 36px;
   font-size: 12px;
 }
-.pending-badge { background: var(--warning); color: #fff; border-radius: 10px; padding: 1px 8px; font-weight: 600; font-size: 11px; }
+.pending-badge { background: var(--warning); color: var(--on-warning); border-radius: 10px; padding: 1px 8px; font-weight: 600; font-size: 11px; }
 
 .detail-panel { width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-sidebar); flex-shrink: 0; }
 .detail-panel .dp-head { padding: 8px 10px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; align-items: center; }
@@ -340,7 +415,7 @@ table.plain th { font-weight: 600; color: var(--text-muted); font-size: 12px; po
   min-width: 180px;
 }
 .context-menu .item { padding: 4px 10px; border-radius: 5px; display: flex; justify-content: space-between; gap: 16px; }
-.context-menu .item:hover { background: var(--accent); color: var(--accent-text); }
+.context-menu .item:hover { background: var(--accent-strong); color: var(--accent-text); }
 .context-menu .item.disabled { opacity: 0.4; pointer-events: none; }
 .context-menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
 
@@ -375,3 +450,22 @@ table.plain th { font-weight: 600; color: var(--text-muted); font-size: 12px; po
 }
 .tpl-mark.small { width: 22px; height: 22px; border-radius: 6px; font-size: 8.5px; }
 .tpl-title { font-weight: 500; line-height: 1.25; }
+
+/* ---------- settings ---------- */
+
+.theme-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.theme-option {
+  display: flex; flex-direction: column; padding: 0; overflow: hidden;
+  border-radius: 10px; text-align: left; white-space: normal;
+  background: var(--bg-input); border: 1px solid var(--border);
+}
+.theme-option:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+.theme-option.on, .theme-option.on:hover:not(:disabled) { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+.theme-preview { display: flex; height: 70px; border-bottom: 1px solid var(--border); }
+.theme-preview > div { flex: 1; display: flex; }
+.theme-preview > div > div:first-child { width: 30%; padding: 8px 6px; }
+.theme-preview > div > div:last-child { flex: 1; padding: 10px 8px; display: flex; flex-direction: column; gap: 6px; }
+.theme-preview i { display: block; height: 5px; border-radius: 3px; }
+.theme-label { padding: 8px 10px 10px; }
+.theme-label .title { font-weight: 600; }
+.theme-label .sub { color: var(--text-muted); font-size: 12px; line-height: 1.35; margin-top: 2px; }

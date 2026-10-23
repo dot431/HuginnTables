@@ -1,8 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@glideapps/glide-data-grid/dist/index.css";
+import "@fontsource/space-grotesk/latin-500.css";
+import "@fontsource/space-grotesk/latin-700.css";
 import "./styles.css";
 import App from "./App";
+import { applyTheme } from "./lib/theme";
+
+applyTheme();
 
 // Database values must arrive exactly as typed: no smart quotes, dashes or autocorrect,
 // including in editors created by libraries (the grid's cell editor).

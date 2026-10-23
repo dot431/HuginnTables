@@ -11,7 +11,7 @@ import DataEditor, {
   Theme,
 } from "@glideapps/glide-data-grid";
 import { Cell } from "../lib/api";
-import { useDarkMode } from "./ui";
+import { ThemeId, useTheme } from "../lib/theme";
 
 export type CellState = "edited" | "inserted" | "deleted" | undefined;
 
@@ -72,10 +72,72 @@ const DARK: Partial<Theme> = {
   linkColor: "#8fb1f5",
 };
 
+const HUGINN_LIGHT: Partial<Theme> = {
+  ...LIGHT,
+  accentColor: "#2e6e74",
+  accentFg: "#fbfaf7",
+  accentLight: "rgba(58, 141, 147, 0.16)",
+  textDark: "#12201f",
+  textMedium: "#4e5b5c",
+  textLight: "#566262",
+  textHeader: "#4e5b5c",
+  textHeaderSelected: "#fbfaf7",
+  textBubble: "#12201f",
+  bgIconHeader: "#4e5b5c",
+  fgIconHeader: "#fbfaf7",
+  bgCell: "#fbfaf7",
+  bgCellMedium: "#f5f3ee",
+  bgHeader: "#eeebe5",
+  bgHeaderHasFocus: "#dfe3df",
+  bgHeaderHovered: "#e5e1da",
+  bgBubble: "#eeebe5",
+  bgBubbleSelected: "#d3dedb",
+  bgSearchResult: "rgba(240, 112, 90, 0.3)",
+  borderColor: "rgba(18, 32, 31, 0.09)",
+  horizontalBorderColor: "rgba(18, 32, 31, 0.06)",
+  linkColor: "#2e6e74",
+};
+
+const HUGINN_DARK: Partial<Theme> = {
+  ...LIGHT,
+  // Fjord Teal lifted slightly so Raven Ink text on a selected header stays above 4.5:1.
+  accentColor: "#3f959b",
+  accentFg: "#12201f",
+  accentLight: "rgba(58, 141, 147, 0.26)",
+  textDark: "#fbfaf7",
+  textMedium: "#b4c0be",
+  textLight: "#93a3a1",
+  textHeader: "#b4c0be",
+  textHeaderSelected: "#12201f",
+  textBubble: "#fbfaf7",
+  bgIconHeader: "#b4c0be",
+  fgIconHeader: "#12201f",
+  bgCell: "#12201f",
+  bgCellMedium: "#172826",
+  bgHeader: "#172826",
+  bgHeaderHasFocus: "#24474a",
+  bgHeaderHovered: "#1f3331",
+  bgBubble: "#243937",
+  bgBubbleSelected: "#24474a",
+  bgSearchResult: "rgba(240, 112, 90, 0.32)",
+  borderColor: "rgba(251, 250, 247, 0.08)",
+  horizontalBorderColor: "rgba(251, 250, 247, 0.05)",
+  drilldownBorder: "rgba(251, 250, 247, 0.2)",
+  linkColor: "#8ccbcf",
+};
+
 const STATE_BG = {
   light: { edited: "#fff3c4", inserted: "#dcf2e4", deleted: "#f8dcda" },
   dark: { edited: "#4a4224", inserted: "#24402f", deleted: "#4d2a28" },
+  "huginn-light": { edited: "#f8ebcc", inserted: "#dcebe9", deleted: "#f9dfd8" },
+  "huginn-dark": { edited: "#3d3b25", inserted: "#1d3d3f", deleted: "#45302b" },
 };
+
+function gridTheme(theme: ThemeId, dark: boolean) {
+  if (theme === "huginn-light") return { theme: HUGINN_LIGHT, stateBg: STATE_BG["huginn-light"] };
+  if (theme === "huginn-dark") return { theme: HUGINN_DARK, stateBg: STATE_BG["huginn-dark"] };
+  return dark ? { theme: DARK, stateBg: STATE_BG.dark } : { theme: LIGHT, stateBg: STATE_BG.light };
+}
 
 function display(value: Cell | undefined): string {
   if (value === null) return "NULL";
@@ -112,9 +174,8 @@ export function DataGrid(props: {
   reveal?: { row: number };
 }) {
   const ref = useRef<DataEditorRef>(null);
-  const dark = useDarkMode();
-  const theme = dark ? DARK : LIGHT;
-  const stateBg = dark ? STATE_BG.dark : STATE_BG.light;
+  const appearance = useTheme();
+  const { theme, stateBg } = gridTheme(appearance.theme, appearance.dark);
   const [widths, setWidths] = useState<Record<string, number>>({});
   const [selection, setSelection] = useState<GridSelection>({
     columns: CompactSelection.empty(),

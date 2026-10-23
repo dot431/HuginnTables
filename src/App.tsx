@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api, ConnectionConfig, errorMessage, SessionInfo } from "./lib/api";
 import { ConnectionsHome } from "./components/ConnectionsHome";
+import { SettingsModal } from "./components/Settings";
 import { Workspace } from "./components/Workspace";
 import { Toasts, toast } from "./components/ui";
 
@@ -13,6 +15,24 @@ export default function App() {
   const [sessions, setSessions] = useState<OpenSession[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // ⌘, opens Settings: the native menu item in the app, a key handler in the browser dev mode.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    // The browser mock backend has no event plugin; there the key handler is enough.
+    const unlisten = listen("open-settings", () => setSettingsOpen(true)).catch(() => undefined);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      unlisten.then((f) => f?.());
+    };
+  }, []);
 
   const connect = async (cfg: ConnectionConfig) => {
     setConnecting(cfg.id);
@@ -62,7 +82,7 @@ export default function App() {
           ))}
         </div>
       )}
-      {active === null && <ConnectionsHome connecting={connecting} onConnect={connect} />}
+      {active === null && <ConnectionsHome connecting={connecting} onConnect={connect} onOpenSettings={() => setSettingsOpen(true)} />}
       {sessions.map(({ info, color }) => (
         <div
           key={info.sessionId}
@@ -71,6 +91,7 @@ export default function App() {
           <Workspace session={info} color={color} active={active === info.sessionId} onClose={() => close(info.sessionId)} />
         </div>
       ))}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       <Toasts />
     </div>
   );

@@ -1,14 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2a3350"/>
-      <stop offset="1" stop-color="#141826"/>
-    </linearGradient>
-  </defs>
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
-  <g fill="none" stroke="#5b8def" stroke-width="10" opacity="0.35">
-    <path d="M220 610h584M220 690h584M220 770h584M400 560v260M600 560v260"/>
-  </g>
-  <path d="M232 560c96-16 160-80 208-160 48-96 128-176 240-176 64 0 112 32 128 80l80 32-80 32c-16 96-96 176-208 208l48 112h-64l-48-96c-80 16-192 16-304-32z" fill="#e8ecf6"/>
-  <circle cx="704" cy="304" r="26" fill="#141826"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs><filter id="shadow" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/></filter></defs><rect x="100" y="100" width="824" height="824" rx="185" fill="#FBFAF7" filter="url(#shadow)"/><g transform="translate(100 100) scale(1.609375)"><rect x="136" y="96" width="64" height="320" rx="16" fill="#12201F"/><rect x="312" y="96" width="64" height="320" rx="16" fill="#3A8D93"/><polygon points="216,199.4 296,246.6 296,312.6 216,265.4" fill="#F0705A" stroke="#F0705A" stroke-width="8" stroke-linejoin="round"/></g></svg>

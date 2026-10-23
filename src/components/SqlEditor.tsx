@@ -6,9 +6,9 @@ import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, C
 import { bracketMatching, syntaxHighlighting, defaultHighlightStyle, indentOnInput } from "@codemirror/language";
 import { sql, PostgreSQL, MySQL, SQLite, SQLDialect, StandardSQL } from "@codemirror/lang-sql";
 import { javascript } from "@codemirror/lang-javascript";
-import { oneDark } from "@codemirror/theme-one-dark";
+import { oneDark, oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { DriverKind } from "../lib/api";
-import { useDarkMode } from "./ui";
+import { ThemeId, useTheme } from "../lib/theme";
 
 export interface SqlEditorHandle {
   view: EditorView | null;
@@ -71,6 +71,34 @@ const baseTheme = EditorView.theme({
   ".cm-gutters": { borderRight: "none", background: "transparent" },
 });
 
+/** The Huginn themes draw the editor on the app's own surfaces; Classic keeps One Dark in dark mode. */
+function huginnEditor(dark: boolean) {
+  return [
+    EditorView.theme(
+      {
+        "&": { backgroundColor: "var(--bg)", color: "var(--text)" },
+        ".cm-gutters": { color: "var(--text-faint)" },
+        ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--accent) 8%, transparent)" },
+        ".cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--accent) 12%, transparent)", color: "var(--text-muted)" },
+        ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--text)" },
+        "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
+          { backgroundColor: "color-mix(in srgb, var(--highlight) 30%, transparent)" },
+        ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": { backgroundColor: "color-mix(in srgb, var(--accent) 30%, transparent)" },
+        ".cm-tooltip": { backgroundColor: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text)" },
+        ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--accent-strong)", color: "var(--accent-text)" },
+        ".cm-placeholder": { color: "var(--text-faint)" },
+      },
+      { dark },
+    ),
+    ...(dark ? [syntaxHighlighting(oneDarkHighlightStyle)] : []),
+  ];
+}
+
+function editorTheme(theme: ThemeId, dark: boolean) {
+  if (theme === "classic") return dark ? oneDark : [];
+  return huginnEditor(dark);
+}
+
 export function SqlEditor(props: {
   driver: DriverKind;
   initial: string;
@@ -81,7 +109,7 @@ export function SqlEditor(props: {
   handle: React.MutableRefObject<SqlEditorHandle>;
 }) {
   const host = useRef<HTMLDivElement>(null);
-  const dark = useDarkMode();
+  const { theme, dark } = useTheme();
   const langConf = useRef(new Compartment());
   const themeConf = useRef(new Compartment());
   // Keep callbacks current without rebuilding the editor.
@@ -128,7 +156,7 @@ export function SqlEditor(props: {
           placeholder(PLACEHOLDERS[props.driver]),
           keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
           langConf.current.of(language()),
-          themeConf.current.of(dark ? oneDark : []),
+          themeConf.current.of(editorTheme(theme, dark)),
           baseTheme,
           EditorView.updateListener.of((u) => {
             if (u.docChanged) callbacks.current.onChange(u.state.doc.toString());
@@ -151,8 +179,8 @@ export function SqlEditor(props: {
   }, [props.schema, props.driver]);
 
   useEffect(() => {
-    props.handle.current.view?.dispatch({ effects: themeConf.current.reconfigure(dark ? oneDark : []) });
-  }, [dark]);
+    props.handle.current.view?.dispatch({ effects: themeConf.current.reconfigure(editorTheme(theme, dark)) });
+  }, [theme, dark]);
 
   return <div ref={host} style={{ height: "100%", display: "flex", flexDirection: "column" }} />;
 }
