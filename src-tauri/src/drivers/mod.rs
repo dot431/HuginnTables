@@ -67,6 +67,18 @@ pub trait Browser: Send + Sync {
     }
     async fn preview_changes(&self, set: &ChangeSet) -> Result<Vec<String>>;
     async fn commit_changes(&self, set: &ChangeSet) -> Result<u64>;
+    /// Indexes of a table, for the Structure tab. Engines without them have none.
+    async fn table_indexes(&self, _schema: &str, _table: &str) -> Result<Vec<IndexInfo>> {
+        Ok(Vec::new())
+    }
+    /// The statements that create a table (and its indexes).
+    async fn table_ddl(&self, _schema: &str, _table: &str) -> Result<String> {
+        bail!("this engine has no table DDL")
+    }
+    /// The SQL that applies `change` to a table, shown before it runs.
+    async fn schema_change_sql(&self, _schema: &str, _table: &str, _change: &SchemaChange) -> Result<Vec<String>> {
+        bail!("schema changes are not supported by this engine")
+    }
 }
 
 /// A connected engine and what the UI needs to know about it.

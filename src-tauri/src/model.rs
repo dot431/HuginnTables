@@ -255,3 +255,30 @@ pub struct DeleteImpact {
     /// can overlap when a table is reached along several paths).
     pub cascaded_rows: u64,
 }
+
+/// An index on a table, as the Structure tab lists it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    /// Key columns in index order; expressions where the engine reports them.
+    pub columns: Vec<String>,
+    pub unique: bool,
+    pub primary: bool,
+    /// Backs a PRIMARY KEY/UNIQUE constraint and goes away with it.
+    pub constraint: bool,
+    /// Access method or index type (btree, gin, FULLTEXT…), where known.
+    pub method: Option<String>,
+    /// The statement that creates the index, where the engine keeps one.
+    pub definition: Option<String>,
+}
+
+/// A schema change from the Structure tab, turned into SQL by the dialect.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SchemaChange {
+    /// `data_type` and `default` are SQL as typed (`varchar(40)`, `now()`, `'x'`).
+    AddColumn { name: String, data_type: String, nullable: bool, default: Option<String> },
+    AddIndex { name: String, columns: Vec<String>, unique: bool },
+    DropIndex { name: String, #[serde(default)] constraint: bool },
+}

@@ -3,6 +3,7 @@ import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, Q
 import * as S from "../lib/staging";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
+import { StructureView } from "./StructureView";
 import { ContextMenu, MenuState, Modal, toast } from "./ui";
 
 const PAGE_SIZES = [100, 300, 1000, 5000];
@@ -279,7 +280,17 @@ export function TableTab(props: {
       )}
 
       {view === "structure" ? (
-        <StructureView columns={structure} />
+        <StructureView
+          sessionId={sessionId}
+          driver={props.driver}
+          schema={schema}
+          table={table}
+          columns={structure}
+          readOnly={props.readOnly}
+          pending={pending}
+          reloadKey={loadedSeq}
+          onChanged={() => load(true)}
+        />
       ) : (
         <div className="grid-wrap">
           <div className="grid-host">
@@ -480,37 +491,6 @@ function DeleteReferences(props: {
         {cleared ? "; rows marked “cleared” stay, and the database empties their reference." : "."}
       </p>
     </Modal>
-  );
-}
-
-function StructureView({ columns }: { columns: ColumnInfo[] }) {
-  return (
-    <div className="structure">
-      <table className="plain">
-        <thead>
-          <tr>
-            <th style={{ width: 40 }}>#</th>
-            <th>Column</th>
-            <th>Type</th>
-            <th>Nullable</th>
-            <th>Default</th>
-            <th>Key</th>
-          </tr>
-        </thead>
-        <tbody>
-          {columns.map((c, i) => (
-            <tr key={c.name}>
-              <td className="faint">{i + 1}</td>
-              <td style={{ fontWeight: 500 }}>{c.name}</td>
-              <td className="mono">{c.dataType}</td>
-              <td>{c.nullable ? "YES" : "NO"}</td>
-              <td className="mono muted">{c.default ?? <span className="faint">NULL</span>}</td>
-              <td>{c.isPrimaryKey && <span className="pk">PRIMARY</span>}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 

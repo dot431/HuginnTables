@@ -388,6 +388,15 @@ table.plain { border-collapse: collapse; width: 100%; }
 table.plain th, table.plain td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 table.plain th { font-weight: 600; color: var(--text-muted); font-size: 12px; position: sticky; top: 0; background: var(--bg); }
 .pk { color: var(--warning); font-weight: 700; font-size: 11px; }
+.unique-tag { color: var(--accent); font-weight: 700; font-size: 11px; }
+.structure-section { padding-bottom: 14px; }
+.structure-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px; }
+.structure-head h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.structure-note { padding: 4px 10px; }
+.sql-preview.ddl { margin: 0 10px; max-height: none; }
+.form-grid label.check { display: flex; align-items: center; gap: 6px; text-align: left; color: var(--text); }
+.index-columns { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.index-columns .index-pos { width: 14px; color: var(--accent); font-weight: 700; font-size: 11px; text-align: center; }
 
 /* ---------- query tab ---------- */
 

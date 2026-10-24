@@ -134,6 +134,18 @@ impl Session {
         self.browser().await.schema_columns(schema).await
     }
 
+    pub async fn table_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>> {
+        self.browser().await.table_indexes(schema, table).await
+    }
+
+    pub async fn table_ddl(&self, schema: &str, table: &str) -> Result<String> {
+        self.browser().await.table_ddl(schema, table).await
+    }
+
+    pub async fn schema_change_sql(&self, schema: &str, table: &str, change: &SchemaChange) -> Result<Vec<String>> {
+        self.browser().await.schema_change_sql(schema, table, change).await
+    }
+
     // ---- browsing & editing --------------------------------------------
 
     pub async fn fetch_rows(&self, req: &FetchRequest) -> Result<QueryResult> {

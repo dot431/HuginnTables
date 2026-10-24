@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Result};
 
-use crate::model::{Cell, CellValue, ChangeSet, DriverKind, FetchRequest, Filter, RowChange};
+use crate::model::{Cell, CellValue, ChangeSet, DriverKind, FetchRequest, Filter, IndexInfo, RowChange, SchemaChange};
 
 /// `table(columns)` references `parent_table(parent_columns)`.
 #[derive(Clone, Debug, PartialEq)]
@@ -537,6 +537,239 @@ impl Dialect {
     }
 }
 
+// ---- schema tools ------------------------------------------------------
+
+/// Groups the rows of `Dialect::indexes_sql` (one per key column) into indexes.
+pub fn group_indexes(rows: Vec<Vec<Cell>>) -> Vec<IndexInfo> {
+    let mut out: Vec<IndexInfo> = Vec::new();
+    for row in rows {
+        let mut it = row.into_iter();
+        let mut next = || it.next().flatten();
+        let name = next().unwrap_or_default();
+        // Expression columns have no name in MySQL and SQLite.
+        let column = next().unwrap_or_else(|| "(expression)".into());
+        let (unique, primary, constraint) = (next(), next(), next());
+        let (method, definition) = (next(), next());
+        match out.last_mut() {
+            Some(ix) if ix.name == name => ix.columns.push(column),
+            _ => out.push(IndexInfo {
+                name,
+                columns: vec![column],
+                unique: unique.as_deref() == Some("YES"),
+                primary: primary.as_deref() == Some("YES"),
+                constraint: constraint.as_deref() == Some("YES"),
+                method: method.map(|m| m.to_lowercase()),
+                definition,
+            }),
+        }
+    }
+    out
+}
+
+impl Dialect {
+    /// Rows of (index, column, unique, primary, backs a constraint ('YES'/'NO'),
+    /// method, definition), one per key column in key order, primary key first.
+    /// SQLite has no index for an INTEGER PRIMARY KEY: it is the rowid.
+    pub fn indexes_sql(&self, schema: &str, table: &str) -> String {
+        match self.0 {
+            SqlEngine::Postgres => format!(
+                "SELECT i.relname, COALESCE(a.attname, pg_get_indexdef(x.indexrelid, k.pos, true)), \
+                 CASE WHEN x.indisunique THEN 'YES' ELSE 'NO' END, CASE WHEN x.indisprimary THEN 'YES' ELSE 'NO' END, \
+                 CASE WHEN EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = x.indexrelid \
+                   AND c.conrelid = x.indrelid AND c.contype IN ('p','u','x')) THEN 'YES' ELSE 'NO' END, \
+                 am.amname, pg_get_indexdef(x.indexrelid) \
+                 FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_am am ON am.oid = i.relam \
+                 CROSS JOIN LATERAL generate_series(1, x.indnkeyatts) AS k(pos) \
+                 LEFT JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = x.indkey[k.pos - 1] \
+                 WHERE x.indrelid = {}::regclass \
+                 ORDER BY x.indisprimary DESC, i.relname, k.pos",
+                self.literal(&self.table(schema, table))
+            ),
+            SqlEngine::Mysql => format!(
+                "SELECT INDEX_NAME, COLUMN_NAME, CASE WHEN NON_UNIQUE = 0 THEN 'YES' ELSE 'NO' END, \
+                 CASE WHEN INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END, \
+                 CASE WHEN INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END, INDEX_TYPE, NULL \
+                 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} \
+                 ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX",
+                self.literal(schema),
+                self.literal(table)
+            ),
+            // Indexes SQLite creates for PRIMARY KEY/UNIQUE ("pk"/"u") have no SQL.
+            SqlEngine::Sqlite => {
+                let lit = self.literal(schema);
+                format!(
+                    "SELECT l.name, i.name, CASE WHEN l.\"unique\" THEN 'YES' ELSE 'NO' END, \
+                     CASE WHEN l.origin = 'pk' THEN 'YES' ELSE 'NO' END, \
+                     CASE WHEN l.origin IN ('pk','u') THEN 'YES' ELSE 'NO' END, NULL, m.sql \
+                     FROM pragma_index_list({}, {lit}) l, pragma_index_info(l.name, {lit}) i \
+                     LEFT JOIN {}.sqlite_master m ON m.type = 'index' AND m.name = l.name \
+                     ORDER BY l.origin = 'pk' DESC, l.name, i.seqno",
+                    self.literal(table),
+                    self.ident(schema)
+                )
+            }
+        }
+    }
+
+    /// MySQL: `SHOW CREATE TABLE`, (name, statement). SQLite: the stored
+    /// statements of the table and its indexes and triggers. Postgres has no
+    /// such thing; this is one row of (relkind, persistence, view definition,
+    /// partition key) for `pg_ddl`.
+    pub fn ddl_sql(&self, schema: &str, table: &str) -> String {
+        match self.0 {
+            SqlEngine::Postgres => format!(
+                "SELECT c.relkind, c.relpersistence, \
+                 CASE WHEN c.relkind IN ('v','m') THEN pg_get_viewdef(c.oid, true) END, \
+                 CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END \
+                 FROM pg_class c WHERE c.oid = {}::regclass",
+                self.literal(&self.table(schema, table))
+            ),
+            SqlEngine::Mysql => format!("SHOW CREATE TABLE {}", self.table(schema, table)),
+            SqlEngine::Sqlite => format!(
+                "SELECT sql FROM {}.sqlite_master WHERE tbl_name = {} COLLATE NOCASE AND sql IS NOT NULL \
+                 ORDER BY CASE type WHEN 'index' THEN 1 WHEN 'trigger' THEN 2 ELSE 0 END, name",
+                self.ident(schema),
+                self.literal(table)
+            ),
+        }
+    }
+
+    /// Postgres rows of (name, type, NOT NULL 'YES'/'NO', default or
+    /// generation expression, identity 'a'/'d'/'', generated 's'/'v'/'').
+    pub fn pg_ddl_columns_sql(&self, schema: &str, table: &str) -> String {
+        format!(
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'YES' ELSE 'NO' END, \
+             pg_get_expr(d.adbin, d.adrelid), a.attidentity::text, a.attgenerated::text \
+             FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE a.attrelid = {}::regclass AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+            self.literal(&self.table(schema, table))
+        )
+    }
+
+    /// Postgres rows of (name, definition): primary key, unique, check,
+    /// foreign key and exclusion constraints, in that order.
+    pub fn pg_ddl_constraints_sql(&self, schema: &str, table: &str) -> String {
+        format!(
+            "SELECT conname, pg_get_constraintdef(oid, true) FROM pg_constraint \
+             WHERE conrelid = {}::regclass AND contype IN ('p','u','c','f','x') \
+             ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'c' THEN 2 WHEN 'f' THEN 3 ELSE 4 END, conname",
+            self.literal(&self.table(schema, table))
+        )
+    }
+
+    /// A readable CREATE TABLE (or VIEW) for Postgres from the rows of
+    /// `ddl_sql`, `pg_ddl_columns_sql` and `pg_ddl_constraints_sql`, followed
+    /// by the indexes that don't back a constraint.
+    pub fn pg_ddl(
+        &self,
+        schema: &str,
+        table: &str,
+        head: &[Cell],
+        columns: &[Vec<Cell>],
+        constraints: &[Vec<Cell>],
+        indexes: &[IndexInfo],
+    ) -> String {
+        let get = |row: &[Cell], i: usize| row.get(i).cloned().flatten().unwrap_or_default();
+        let name = self.table(schema, table);
+        let kind = get(head, 0);
+        let mut out = if let Some(def) = head.get(2).cloned().flatten() {
+            let view = if kind == "m" { "MATERIALIZED VIEW" } else { "VIEW" };
+            format!("CREATE {view} {name} AS\n{};", def.trim_end().trim_end_matches(';'))
+        } else {
+            let mut lines = Vec::with_capacity(columns.len() + constraints.len());
+            for col in columns {
+                let mut line = format!("  {} {}", self.ident(&get(col, 0)), get(col, 1));
+                let default = get(col, 3);
+                match (get(col, 4).as_str(), get(col, 5).as_str()) {
+                    (_, "s") => line.push_str(&format!(" GENERATED ALWAYS AS ({default}) STORED")),
+                    (_, "v") => line.push_str(&format!(" GENERATED ALWAYS AS ({default}) VIRTUAL")),
+                    ("a", _) => line.push_str(" GENERATED ALWAYS AS IDENTITY"),
+                    ("d", _) => line.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
+                    _ if !default.is_empty() => line.push_str(&format!(" DEFAULT {default}")),
+                    _ => {}
+                }
+                if get(col, 2) == "YES" {
+                    line.push_str(" NOT NULL");
+                }
+                lines.push(line);
+            }
+            for c in constraints {
+                lines.push(format!("  CONSTRAINT {} {}", self.ident(&get(c, 0)), get(c, 1)));
+            }
+            let unlogged = if get(head, 1) == "u" { "UNLOGGED " } else { "" };
+            let mut sql = format!("CREATE {unlogged}TABLE {name} (\n{}\n)", lines.join(",\n"));
+            if let Some(key) = head.get(3).cloned().flatten() {
+                sql.push_str(&format!(" PARTITION BY {key}"));
+            }
+            sql.push(';');
+            sql
+        };
+        for def in indexes.iter().filter(|i| !i.constraint).filter_map(|i| i.definition.as_ref()) {
+            out.push_str(&format!("\n\n{def};"));
+        }
+        out
+    }
+
+    /// The statements that apply `change` to `schema.table`.
+    pub fn schema_change_sql(&self, schema: &str, table: &str, change: &SchemaChange) -> Result<Vec<String>> {
+        fn required<'a>(what: &str, value: &'a str) -> Result<&'a str> {
+            match value.trim() {
+                "" => bail!("enter {what}"),
+                v => Ok(v),
+            }
+        }
+        let target = self.table(schema, table);
+        Ok(vec![match change {
+            SchemaChange::AddColumn { name, data_type, nullable, default } => {
+                let mut sql = format!(
+                    "ALTER TABLE {target} ADD COLUMN {} {}",
+                    self.ident(required("a column name", name)?),
+                    required("a column type", data_type)?
+                );
+                if let Some(default) = default.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                    sql.push_str(&format!(" DEFAULT {default}"));
+                }
+                if !nullable {
+                    sql.push_str(" NOT NULL");
+                }
+                sql
+            }
+            SchemaChange::AddIndex { name, columns, unique } => {
+                let name = required("an index name", name)?;
+                if columns.is_empty() {
+                    bail!("choose at least one column");
+                }
+                // SQLite qualifies the index with the schema, the others the table.
+                let (index, on) = match self.0 {
+                    SqlEngine::Sqlite => (self.table(schema, name), self.ident(table)),
+                    _ => (self.ident(name), target),
+                };
+                let cols: Vec<_> = columns.iter().map(|c| self.ident(c)).collect();
+                format!(
+                    "CREATE {}INDEX {index} ON {on} ({})",
+                    if *unique { "UNIQUE " } else { "" },
+                    cols.join(", ")
+                )
+            }
+            SchemaChange::DropIndex { name, constraint } => {
+                let name = required("an index name", name)?;
+                match self.0 {
+                    SqlEngine::Postgres if *constraint => {
+                        format!("ALTER TABLE {target} DROP CONSTRAINT {}", self.ident(name))
+                    }
+                    SqlEngine::Sqlite if *constraint => {
+                        bail!("{name} belongs to a PRIMARY KEY or UNIQUE constraint of the table; SQLite can't drop it")
+                    }
+                    SqlEngine::Postgres | SqlEngine::Sqlite => format!("DROP INDEX {}", self.table(schema, name)),
+                    SqlEngine::Mysql if name == "PRIMARY" => format!("ALTER TABLE {target} DROP PRIMARY KEY"),
+                    SqlEngine::Mysql => format!("DROP INDEX {} ON {target}", self.ident(name)),
+                }
+            }
+        }])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,5 +925,157 @@ mod tests {
                 "DELETE FROM \"public\".\"customers\" WHERE \"id\" = '3'".to_string(),
             ]
         );
+    }
+
+
+    fn cells(values: &[Option<&str>]) -> Vec<Cell> {
+        values.iter().map(|v| v.map(Into::into)).collect()
+    }
+
+    #[test]
+    fn index_queries() {
+        let pg = Dialect(SqlEngine::Postgres);
+        let sql = pg.indexes_sql("public", "users");
+        assert!(sql.contains("WHERE x.indrelid = '\"public\".\"users\"'::regclass"), "{sql}");
+        assert!(sql.contains("generate_series(1, x.indnkeyatts)"), "{sql}");
+        let my = Dialect(SqlEngine::Mysql);
+        let sql = my.indexes_sql("shop", "it's");
+        assert!(sql.contains("TABLE_SCHEMA = 'shop' AND TABLE_NAME = 'it''s'"), "{sql}");
+        let lt = Dialect(SqlEngine::Sqlite);
+        let sql = lt.indexes_sql("main", "pets");
+        assert!(sql.contains("FROM pragma_index_list('pets', 'main') l, pragma_index_info(l.name, 'main') i"), "{sql}");
+        assert!(sql.contains("LEFT JOIN \"main\".sqlite_master m"), "{sql}");
+    }
+
+    #[test]
+    fn indexes_group_by_name() {
+        let rows = vec![
+            cells(&[Some("users_pkey"), Some("id"), Some("YES"), Some("YES"), Some("YES"), Some("btree"), Some("CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)")]),
+            cells(&[Some("users_name_idx"), Some("last"), Some("NO"), Some("NO"), Some("NO"), Some("BTREE"), None]),
+            cells(&[Some("users_name_idx"), Some("first"), Some("NO"), Some("NO"), Some("NO"), Some("BTREE"), None]),
+            cells(&[Some("by_lower"), None, Some("NO"), Some("NO"), Some("NO"), None, None]),
+        ];
+        let ix = group_indexes(rows);
+        assert_eq!(ix.len(), 3);
+        assert!(ix[0].primary && ix[0].unique && ix[0].constraint);
+        assert_eq!(ix[1].columns, ["last", "first"]);
+        assert_eq!(ix[1].method.as_deref(), Some("btree"));
+        assert!(!ix[1].unique && ix[1].definition.is_none());
+        assert_eq!(ix[2].columns, ["(expression)"]);
+    }
+
+    #[test]
+    fn ddl_queries() {
+        assert_eq!(Dialect(SqlEngine::Mysql).ddl_sql("shop", "items"), "SHOW CREATE TABLE `shop`.`items`");
+        let sql = Dialect(SqlEngine::Sqlite).ddl_sql("main", "pets");
+        assert!(sql.starts_with("SELECT sql FROM \"main\".sqlite_master WHERE tbl_name = 'pets'"), "{sql}");
+        let pg = Dialect(SqlEngine::Postgres);
+        assert!(pg.ddl_sql("public", "users").contains("WHERE c.oid = '\"public\".\"users\"'::regclass"));
+        assert!(pg.pg_ddl_columns_sql("public", "users").contains("a.attidentity::text"));
+        assert!(pg.pg_ddl_constraints_sql("public", "users").contains("contype IN ('p','u','c','f','x')"));
+    }
+
+    #[test]
+    fn postgres_create_table() {
+        let pg = Dialect(SqlEngine::Postgres);
+        let head = cells(&[Some("r"), Some("p"), None, None]);
+        let columns = vec![
+            cells(&[Some("id"), Some("integer"), Some("YES"), None, Some("a"), Some("")]),
+            cells(&[Some("email"), Some("text"), Some("NO"), None, Some(""), Some("")]),
+            cells(&[Some("created"), Some("timestamp with time zone"), Some("YES"), Some("now()"), Some(""), Some("")]),
+            cells(&[Some("domain"), Some("text"), Some("NO"), Some("split_part(email, '@'::text, 2)"), Some(""), Some("s")]),
+        ];
+        let constraints = vec![
+            cells(&[Some("users_pkey"), Some("PRIMARY KEY (id)")]),
+            cells(&[Some("users_email_key"), Some("UNIQUE (email)")]),
+            cells(&[Some("users_team_fkey"), Some("FOREIGN KEY (team) REFERENCES teams(id) ON DELETE CASCADE")]),
+        ];
+        let index = |name: &str, constraint: bool, def: &str| IndexInfo {
+            name: name.into(),
+            columns: vec!["x".into()],
+            unique: constraint,
+            primary: false,
+            constraint,
+            method: Some("btree".into()),
+            definition: Some(def.into()),
+        };
+        let indexes = vec![
+            index("users_email_key", true, "CREATE UNIQUE INDEX users_email_key ON public.users USING btree (email)"),
+            index("users_created_idx", false, "CREATE INDEX users_created_idx ON public.users USING btree (created)"),
+        ];
+        assert_eq!(
+            pg.pg_ddl("public", "users", &head, &columns, &constraints, &indexes),
+            "CREATE TABLE \"public\".\"users\" (\n\
+             \x20 \"id\" integer GENERATED ALWAYS AS IDENTITY NOT NULL,\n\
+             \x20 \"email\" text,\n\
+             \x20 \"created\" timestamp with time zone DEFAULT now() NOT NULL,\n\
+             \x20 \"domain\" text GENERATED ALWAYS AS (split_part(email, '@'::text, 2)) STORED,\n\
+             \x20 CONSTRAINT \"users_pkey\" PRIMARY KEY (id),\n\
+             \x20 CONSTRAINT \"users_email_key\" UNIQUE (email),\n\
+             \x20 CONSTRAINT \"users_team_fkey\" FOREIGN KEY (team) REFERENCES teams(id) ON DELETE CASCADE\n\
+             );\n\n\
+             CREATE INDEX users_created_idx ON public.users USING btree (created);"
+        );
+        let partitioned = cells(&[Some("p"), Some("u"), None, Some("RANGE (created)")]);
+        assert_eq!(
+            pg.pg_ddl("public", "events", &partitioned, &columns[..1], &[], &[]),
+            "CREATE UNLOGGED TABLE \"public\".\"events\" (\n  \"id\" integer GENERATED ALWAYS AS IDENTITY NOT NULL\n) PARTITION BY RANGE (created);"
+        );
+        let view = cells(&[Some("v"), Some("p"), Some(" SELECT id\n   FROM users;"), None]);
+        assert_eq!(
+            pg.pg_ddl("public", "ids", &view, &[], &[], &[]),
+            "CREATE VIEW \"public\".\"ids\" AS\n SELECT id\n   FROM users;"
+        );
+    }
+
+    #[test]
+    fn schema_changes() {
+        let column = |name: &str, data_type: &str, nullable: bool, default: Option<&str>| SchemaChange::AddColumn {
+            name: name.into(),
+            data_type: data_type.into(),
+            nullable,
+            default: default.map(Into::into),
+        };
+        let add_column = column("note", "varchar(40)", false, Some(" 'n/a' "));
+        let add_index = SchemaChange::AddIndex { name: "pets_owner_idx".into(), columns: vec!["owner".into(), "na\"me".into()], unique: true };
+        let pg = Dialect(SqlEngine::Postgres);
+        let my = Dialect(SqlEngine::Mysql);
+        let lt = Dialect(SqlEngine::Sqlite);
+        assert_eq!(
+            pg.schema_change_sql("public", "pets", &add_column).unwrap(),
+            ["ALTER TABLE \"public\".\"pets\" ADD COLUMN \"note\" varchar(40) DEFAULT 'n/a' NOT NULL"]
+        );
+        assert_eq!(
+            my.schema_change_sql("zoo", "pets", &column("note", "varchar(40)", true, Some(""))).unwrap(),
+            ["ALTER TABLE `zoo`.`pets` ADD COLUMN `note` varchar(40)"]
+        );
+        assert_eq!(
+            pg.schema_change_sql("public", "pets", &add_index).unwrap(),
+            ["CREATE UNIQUE INDEX \"pets_owner_idx\" ON \"public\".\"pets\" (\"owner\", \"na\"\"me\")"]
+        );
+        assert_eq!(
+            my.schema_change_sql("zoo", "pets", &add_index).unwrap(),
+            ["CREATE UNIQUE INDEX `pets_owner_idx` ON `zoo`.`pets` (`owner`, `na\"me`)"]
+        );
+        assert_eq!(
+            lt.schema_change_sql("main", "pets", &add_index).unwrap(),
+            ["CREATE UNIQUE INDEX \"main\".\"pets_owner_idx\" ON \"pets\" (\"owner\", \"na\"\"me\")"]
+        );
+
+        let drop = |name: &str, constraint: bool| SchemaChange::DropIndex { name: name.into(), constraint };
+        assert_eq!(pg.schema_change_sql("public", "pets", &drop("pets_owner_idx", false)).unwrap(), ["DROP INDEX \"public\".\"pets_owner_idx\""]);
+        assert_eq!(
+            pg.schema_change_sql("public", "pets", &drop("pets_name_key", true)).unwrap(),
+            ["ALTER TABLE \"public\".\"pets\" DROP CONSTRAINT \"pets_name_key\""]
+        );
+        assert_eq!(my.schema_change_sql("zoo", "pets", &drop("by_owner", false)).unwrap(), ["DROP INDEX `by_owner` ON `zoo`.`pets`"]);
+        assert_eq!(my.schema_change_sql("zoo", "pets", &drop("PRIMARY", true)).unwrap(), ["ALTER TABLE `zoo`.`pets` DROP PRIMARY KEY"]);
+        assert_eq!(lt.schema_change_sql("main", "pets", &drop("by_owner", false)).unwrap(), ["DROP INDEX \"main\".\"by_owner\""]);
+        assert!(lt.schema_change_sql("main", "pets", &drop("sqlite_autoindex_pets_1", true)).is_err());
+
+        // Missing pieces are refused rather than turned into broken SQL.
+        assert!(pg.schema_change_sql("public", "pets", &column(" ", "text", true, None)).is_err());
+        assert!(pg.schema_change_sql("public", "pets", &column("note", "", true, None)).is_err());
+        assert!(pg.schema_change_sql("public", "pets", &SchemaChange::AddIndex { name: "i".into(), columns: vec![], unique: false }).is_err());
     }
 }

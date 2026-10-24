@@ -202,6 +202,37 @@ async fn commit_changes(
     state.session(&session_id).await?.commit_changes(&changes).await.map_err(err)
 }
 
+#[tauri::command]
+async fn table_indexes(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> CmdResult<Vec<IndexInfo>> {
+    state.session(&session_id).await?.table_indexes(&schema, &table).await.map_err(err)
+}
+
+#[tauri::command]
+async fn table_ddl(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> CmdResult<String> {
+    state.session(&session_id).await?.table_ddl(&schema, &table).await.map_err(err)
+}
+
+#[tauri::command]
+async fn schema_change_sql(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+    change: SchemaChange,
+) -> CmdResult<Vec<String>> {
+    state.session(&session_id).await?.schema_change_sql(&schema, &table, &change).await.map_err(err)
+}
+
 /// The default macOS menu binds ⌘W to "Close Window"; the app uses ⌘W, ⌘T and
 /// friends for tabs, so only keep the items that need native handling.
 fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -282,6 +313,9 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
             delete_references,
             preview_changes,
             commit_changes,
+            table_indexes,
+            table_ddl,
+            schema_change_sql,
         ])
 }
 

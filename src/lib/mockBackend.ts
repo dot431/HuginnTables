@@ -2,7 +2,7 @@
  * In-memory stand-in for the Rust backend, installed only by `npm run dev` in a
  * plain browser (outside Tauri) so the UI can be developed and tested there.
  */
-import type { Cell, ChangeSet, ConnectionConfig, FetchRequest, QueryResult } from "./api";
+import type { Cell, ChangeSet, ConnectionConfig, FetchRequest, IndexInfo, QueryResult, SchemaChange } from "./api";
 
 type Table = { columns: { name: string; dataType: string; nullable: boolean; isPrimaryKey: boolean }[]; rows: Cell[][] };
 
@@ -31,6 +31,33 @@ const tables: Record<string, Table> = {
     rows: [["2026-10-01 10:00:00+00", "login"], ["2026-10-01 10:05:00+00", "logout"]],
   },
 };
+
+const indexes: Record<string, IndexInfo[]> = {
+  customers: [
+    { name: "customers_pkey", columns: ["id"], unique: true, primary: true, constraint: true, method: "btree", definition: "CREATE UNIQUE INDEX customers_pkey ON public.customers USING btree (id)" },
+    { name: "customers_email_key", columns: ["email"], unique: true, primary: false, constraint: true, method: "btree", definition: "CREATE UNIQUE INDEX customers_email_key ON public.customers USING btree (email)" },
+    { name: "customers_country_name_idx", columns: ["country", "name"], unique: false, primary: false, constraint: false, method: "btree", definition: "CREATE INDEX customers_country_name_idx ON public.customers USING btree (country, name)" },
+  ],
+};
+
+const q = (name: string) => `"${name.replace(/"/g, '""')}"`;
+
+/** Postgres-flavoured stand-in for the dialect's schema change SQL. */
+function schemaChangeSql(schema: string, table: string, c: SchemaChange): string[] {
+  const target = `${q(schema)}.${q(table)}`;
+  if (c.kind === "addColumn") {
+    if (!c.name.trim()) throw "enter a column name";
+    if (!c.dataType.trim()) throw "enter a column type";
+    const def = c.default?.trim() ? ` DEFAULT ${c.default.trim()}` : "";
+    return [`ALTER TABLE ${target} ADD COLUMN ${q(c.name.trim())} ${c.dataType.trim()}${def}${c.nullable ? "" : " NOT NULL"}`];
+  }
+  if (c.kind === "addIndex") {
+    if (!c.name.trim()) throw "enter an index name";
+    if (!c.columns.length) throw "choose at least one column";
+    return [`CREATE ${c.unique ? "UNIQUE " : ""}INDEX ${q(c.name.trim())} ON ${target} (${c.columns.map(q).join(", ")})`];
+  }
+  return [c.constraint ? `ALTER TABLE ${target} DROP CONSTRAINT ${q(c.name)}` : `DROP INDEX ${q(schema)}.${q(c.name)}`];
+}
 
 let connections: ConnectionConfig[] = [];
 const delay = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 60));
@@ -146,6 +173,16 @@ const handlers: Record<string, (a: any) => unknown> = {
   },
   preview_changes: ({ changes }) => changes.changes.map((c: { kind: string }) => `-- ${c.kind} ${JSON.stringify(c)}`),
   commit_changes: ({ changes }) => applyChanges(changes),
+  table_indexes: ({ table }) => indexes[table] ?? [],
+  table_ddl: ({ schema, table }) => {
+    const t = tables[table] ?? tables.customers;
+    const cols = t.columns.map((c) => `  ${q(c.name)} ${c.dataType}${c.nullable ? "" : " NOT NULL"}`);
+    const pk = t.columns.filter((c) => c.isPrimaryKey).map((c) => c.name);
+    if (pk.length) cols.push(`  CONSTRAINT ${q(`${table}_pkey`)} PRIMARY KEY (${pk.join(", ")})`);
+    const extra = (indexes[table] ?? []).filter((i) => !i.constraint).map((i) => `\n\n${i.definition};`);
+    return `CREATE TABLE ${q(schema)}.${q(table)} (\n${cols.join(",\n")}\n);${extra.join("")}`;
+  },
+  schema_change_sql: ({ schema, table, change }) => schemaChangeSql(schema, table, change),
 };
 
 export function installMockBackend() {
