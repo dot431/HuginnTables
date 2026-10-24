@@ -155,6 +155,16 @@ const handlers: Record<string, (a: any) => unknown> = {
   },
   delete_connection: ({ id }) => void (connections = connections.filter((c) => c.id !== id)),
   test_connection: () => "17.6 (mock)",
+  // A Sail project, as read from <folder>/.env.
+  read_env_connection: ({ path }: { path: string }): ConnectionConfig => {
+    const folder = path.replace(/\/\.env[^/]*$/, "").split("/").filter(Boolean).pop() ?? "app";
+    return {
+      id: "", name: `${folder[0].toUpperCase()}${folder.slice(1)} (local)`, driver: "mysql", color: "", template: "mysql",
+      host: "127.0.0.1", port: 3306, user: "sail", database: folder, sslMode: "prefer", filePath: "", uri: "",
+      ssh: { enabled: false, host: "", port: 22, user: "", auth: "password", keyPath: "~/.ssh/id_ed25519" },
+      password: "password",
+    };
+  },
   connect: ({ config }) => {
     const sessionId = crypto.randomUUID();
     sessions.set(sessionId, config);

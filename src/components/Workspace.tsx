@@ -36,6 +36,21 @@ const SCHEMA_LABEL: Record<DriverKind, string> = {
 /** Redis "tables" are key patterns; "*" reads better as "All keys". */
 const displayName = (t: { name: string }) => (t.name === "*" ? "All keys" : t.name);
 
+/** Bookkeeping tables Laravel and its first-party packages create. */
+const LARAVEL_TABLES = new Set([
+  "migrations", "jobs", "job_batches", "failed_jobs", "cache", "cache_locks", "sessions",
+  "password_reset_tokens", "password_resets", "personal_access_tokens",
+]);
+const isLaravelTable = (name: string) => LARAVEL_TABLES.has(name) || /^(telescope|pulse)_/.test(name);
+
+function loadFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function Workspace(props: { session: SessionInfo; color: string; active: boolean; onClose: () => void }) {
   const [info, setInfo] = useState(props.session);
   const sessionId = info.sessionId;
@@ -53,6 +68,17 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
   const nextId = useRef(1);
   const sidebar = useDragSize(250, 180, 480, "x");
   const searchRef = useRef<HTMLInputElement>(null);
+  const hideLaravelKey = `huginn.hideLaravel.${info.connectionId}`;
+  const [hideLaravel, setHideLaravel] = useState(() => loadFlag(hideLaravelKey));
+  const toggleHideLaravel = (on: boolean) => {
+    setHideLaravel(on);
+    try {
+      if (on) localStorage.setItem(hideLaravelKey, "1");
+      else localStorage.removeItem(hideLaravelKey);
+    } catch {
+      /* storage unavailable: applies to this session only */
+    }
+  };
 
   const loadSchemas = useCallback(async () => {
     try {
@@ -182,10 +208,11 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  const laravelCount = useMemo(() => tables.filter((t) => isLaravelTable(t.name)).length, [tables]);
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    return tables.filter((t) => t.name.toLowerCase().includes(q));
-  }, [tables, search]);
+    return tables.filter((t) => t.name.toLowerCase().includes(q) && !(hideLaravel && isLaravelTable(t.name)));
+  }, [tables, search, hideLaravel]);
   const selectQuery = (t: string) => {
     switch (info.driver) {
       case "mysql":
@@ -273,6 +300,12 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
             if (e.key === "Escape") setSearch("");
           }}
         />
+        {laravelCount > 0 && (
+          <label className="sidebar-toggle" title={`Hide ${laravelCount} framework tables (migrations, jobs, sessions, …)`}>
+            <input type="checkbox" checked={hideLaravel} onChange={(e) => toggleHideLaravel(e.target.checked)} />
+            Hide Laravel tables
+          </label>
+        )}
         <div className="table-list">
           {tablesLoading && tables.length === 0 ? (
             <div className="row" style={{ padding: 10 }}>
@@ -296,7 +329,9 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
           )}
         </div>
         <div className="sidebar-foot">
-          <span>{tables.length} objects</span>
+          <span>
+            {tables.length} objects{hideLaravel && laravelCount > 0 && ` · ${laravelCount} hidden`}
+          </span>
           <div className="spacer" />
           <button className="ghost icon" title="Refresh" onClick={() => (loadSchemas(), loadTables())}>↻</button>
           <button className="ghost icon" title="New query (⌘T)" onClick={() => openQuery()}>SQL</button>
