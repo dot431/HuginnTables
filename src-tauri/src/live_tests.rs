@@ -147,6 +147,111 @@ async fn exercise(s: &Session, schema: &str) {
     assert!(results[1].error.is_some());
 }
 
+/// Structure tab, foreign-key navigation and export against a real server.
+/// Runs after `cascade`, whose owners/ravens/sightings/nests tables it reads.
+async fn features(s: &Session, schema: &str) {
+    // Foreign keys around ravens: its own key to owners, and two pointing at it.
+    let fks = s.table_foreign_keys(schema, "ravens").await.unwrap();
+    assert_eq!(fks.outgoing.len(), 1, "{fks:?}");
+    assert_eq!((fks.outgoing[0].parent_table.as_str(), &fks.outgoing[0].columns), ("owners", &vec!["clan".to_string(), "owner".to_string()]));
+    assert_eq!(fks.outgoing[0].parent_columns, ["clan", "name"]);
+    let mut incoming: Vec<_> = fks.incoming.iter().map(|f| (f.table.as_str(), f.on_delete.as_str())).collect();
+    incoming.sort();
+    assert_eq!(incoming, [("nests", "SET NULL"), ("sightings", "CASCADE")]);
+
+    // Indexes: the composite primary key of owners.
+    let ix = s.table_indexes(schema, "owners").await.unwrap();
+    let pk = ix.iter().find(|i| i.primary).unwrap_or_else(|| panic!("no primary index: {ix:?}"));
+    assert_eq!(pk.columns, ["clan", "name"]);
+    assert!(pk.unique);
+
+    // Add a column and an index, then drop the index, all through the generated SQL.
+    let run = |sql: Vec<String>| async move {
+        for r in s.run_statements(&sql).await {
+            assert!(r.error.is_none(), "{}: {:?}", r.sql, r.error);
+        }
+    };
+    let add_col = SchemaChange::AddColumn { name: "nick".into(), data_type: "varchar(20)".into(), nullable: true, default: Some("'none'".into()) };
+    run(s.schema_change_sql(schema, "ravens", &add_col).await.unwrap()).await;
+    let cols = s.table_columns(schema, "ravens").await.unwrap();
+    let nick = cols.iter().find(|c| c.name == "nick").expect("nick column added");
+    assert!(nick.nullable);
+    let add_ix = SchemaChange::AddIndex { name: "ravens_nick_idx".into(), columns: vec!["nick".into(), "id".into()], unique: false };
+    run(s.schema_change_sql(schema, "ravens", &add_ix).await.unwrap()).await;
+    let ix = s.table_indexes(schema, "ravens").await.unwrap();
+    let nick_ix = ix.iter().find(|i| i.name == "ravens_nick_idx").unwrap_or_else(|| panic!("{ix:?}"));
+    assert_eq!(nick_ix.columns, ["nick", "id"]);
+    assert!(!nick_ix.unique && !nick_ix.constraint);
+    let drop_ix = SchemaChange::DropIndex { name: "ravens_nick_idx".into(), constraint: false };
+    run(s.schema_change_sql(schema, "ravens", &drop_ix).await.unwrap()).await;
+    assert!(!s.table_indexes(schema, "ravens").await.unwrap().iter().any(|i| i.name == "ravens_nick_idx"));
+
+    // DDL round trip: drop the table and recreate it from its own DDL.
+    exec(s, &[
+        "DROP TABLE IF EXISTS probe",
+        "CREATE TABLE probe (id int PRIMARY KEY, name varchar(30) NOT NULL DEFAULT 'x', score int CHECK (score > 0), owner_clan varchar(20), owner_name varchar(20), \
+         FOREIGN KEY (owner_clan, owner_name) REFERENCES owners (clan, name))",
+        "CREATE INDEX probe_name_idx ON probe (name)",
+    ]).await;
+    let ddl = s.table_ddl(schema, "probe").await.unwrap();
+    let before = s.table_columns(schema, "probe").await.unwrap();
+    exec(s, &["DROP TABLE probe"]).await;
+    let statements: Vec<String> = ddl.split(";\n").map(|p| p.trim().trim_end_matches(';').to_string()).filter(|p| !p.is_empty()).collect();
+    run(statements).await;
+    let after = s.table_columns(schema, "probe").await.unwrap();
+    let shape = |c: &[ColumnInfo]| c.iter().map(|c| (c.name.clone(), c.nullable, c.is_primary_key)).collect::<Vec<_>>();
+    assert_eq!(shape(&before), shape(&after), "DDL:\n{ddl}");
+    assert!(s.table_indexes(schema, "probe").await.unwrap().iter().any(|i| i.name == "probe_name_idx"), "DDL:\n{ddl}");
+    assert_eq!(s.table_foreign_keys(schema, "probe").await.unwrap().outgoing.len(), 1, "DDL:\n{ddl}");
+
+    // Export pages through the table: 10,000 rows, filtered to 9,900, over two 5,000-row pages.
+    exec(s, &[
+        "DROP TABLE IF EXISTS bulk",
+        "DROP TABLE IF EXISTS digits",
+        "CREATE TABLE digits (d int)",
+        "INSERT INTO digits VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)",
+        "CREATE TABLE bulk (id int PRIMARY KEY, v varchar(10))",
+        "INSERT INTO bulk SELECT a.d + 10*b.d + 100*c.d + 1000*e.d + 1, 'it''s' FROM digits a, digits b, digits c, digits e",
+    ]).await;
+    let path = std::env::temp_dir().join(format!("huginn-export-{}.csv", uuid::Uuid::new_v4()));
+    let req = crate::export::ExportRequest {
+        schema: schema.into(),
+        table: "bulk".into(),
+        filters: vec![Filter { column: "id".into(), op: ">".into(), value: "100".into() }],
+        raw_where: String::new(),
+        sort: None,
+        key_order: vec!["id".into()],
+    };
+    let n = crate::export::write_table(s, &req, crate::export::ExportFormat::Csv, &path.to_string_lossy()).await.unwrap();
+    assert_eq!(n, 9900);
+    let csv = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!((lines.len(), lines[0], lines[1], lines[9900]), (9901, "id,v", "101,it's", "10000,it's"));
+    let _ = std::fs::remove_file(path);
+}
+
+/// A read-only connection refuses writes from the grid and the editor.
+async fn read_only(mut cfg: ConnectionConfig) {
+    cfg.read_only = true;
+    let s = Session::open("ro".into(), cfg).await.unwrap();
+    assert!(s.info().await.read_only);
+    let r = s.run_statements(&["SELECT COUNT(*) FROM owners".into()]).await;
+    assert!(r[0].error.is_none(), "{:?}", r[0].error);
+    for sql in ["INSERT INTO owners VALUES ('x', 'y')", "CREATE TABLE ro_probe (a int)", "DROP TABLE owners"] {
+        let r = s.run_statements(&[sql.into()]).await;
+        assert!(r[0].error.is_some(), "{sql} ran on a read-only connection");
+    }
+    let set = ChangeSet {
+        schema: s.info().await.schema,
+        table: "owners".into(),
+        key_is_primary: true,
+        cascade: false,
+        changes: vec![RowChange::Insert { values: vec![cv("clan", Some("x")), cv("name", Some("y"))] }],
+    };
+    assert!(s.commit_changes(&set).await.is_err());
+    s.close().await;
+}
+
 /// Deleting rows other tables point at (through a composite key, then a
 /// single-column one): they're reported, a plain commit is refused and a
 /// cascading one removes them, deepest first.
@@ -211,6 +316,8 @@ async fn postgres_end_to_end() {
     assert!(s.list_schemas().await.unwrap().contains(&"public".to_string()));
     exercise(&s, "public").await;
     cascade(&s, "public").await;
+    features(&s, "public").await;
+    read_only(pg()).await;
 
     let dbs = s.list_databases().await.unwrap();
     assert!(dbs.contains(&"postgres".to_string()));
@@ -250,6 +357,8 @@ async fn mysql_end_to_end() {
     assert!(s.list_schemas().await.unwrap().contains(&"shop".to_string()));
     exercise(&s, "shop").await;
     cascade(&s, "shop").await;
+    features(&s, "shop").await;
+    read_only(mysql()).await;
 
     exec(&s, &["CREATE DATABASE IF NOT EXISTS huginn_other"]).await;
     s.use_schema("huginn_other").await.unwrap();
@@ -289,6 +398,8 @@ async fn sqlite_end_to_end() {
     exercise(&s, "main").await;
     exec(&s, &["PRAGMA foreign_keys = ON"]).await;
     cascade(&s, "main").await;
+    features(&s, "main").await;
+    read_only(s.config.clone()).await;
     s.close().await;
     let _ = std::fs::remove_file(path);
 }
