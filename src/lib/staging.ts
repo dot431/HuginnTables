@@ -42,6 +42,8 @@ export function applyEdit(s: Staging, rows: readonly Cell[][], col: number, row:
   }
   if (s.deleted.has(row)) return s;
   const original = rows[row][col];
+  // Leave the staging untouched when nothing changes, so undo doesn't record a no-op.
+  if (value === original && !s.edits.get(row)?.has(col)) return s;
   const edits = new Map(s.edits);
   const rowEdits = new Map(edits.get(row) ?? []);
   if (value === original) rowEdits.delete(col);
@@ -70,6 +72,28 @@ export function toggleDelete(s: Staging, rowsLength: number, targets: number[]):
 
 export function addRow(s: Staging, width: number): Staging {
   return { ...s, inserted: [...s.inserted, new Array(width).fill(undefined)] };
+}
+
+/**
+ * Stages copies of `targets` as new rows, carrying their current (edited)
+ * values. Columns in `skip`, the primary key, stay unset so defaults apply.
+ */
+export function duplicateRows(
+  s: Staging,
+  rows: readonly Cell[][],
+  width: number,
+  targets: number[],
+  skip: readonly number[],
+): Staging {
+  const copies = [...targets]
+    .sort((a, b) => a - b)
+    .map((row) => Array.from({ length: width }, (_, c) => (skip.includes(c) ? undefined : cellAt(s, rows, c, row).value)));
+  return copies.length ? { ...s, inserted: [...s.inserted, ...copies] } : s;
+}
+
+/** Stages the same value in one column of every target row. */
+export function setColumn(s: Staging, rows: readonly Cell[][], col: number, targets: number[], value: Cell): Staging {
+  return targets.reduce((acc, row) => applyEdit(acc, rows, col, row, value), s);
 }
 
 export function revertRows(s: Staging, rowsLength: number, targets: number[]): Staging {
