@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact } from "../lib/api";
+import { pastedRows } from "../lib/formats";
 import * as S from "../lib/staging";
+import { copyMenuItems, ExportDialog, PasteDialog } from "./CopyExport";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
 import { ContextMenu, MenuState, Modal, toast } from "./ui";
@@ -58,6 +60,8 @@ export function TableTab(props: {
   const loadSeq = useRef(0);
   const [loadedSeq, setLoadedSeq] = useState(0);
   const [reveal, setReveal] = useState<{ row: number }>();
+  const [exporting, setExporting] = useState(false);
+  const [pasteBox, setPasteBox] = useState(false);
 
   const rows = result?.rows ?? [];
   const columns = useMemo(() => result?.columns.map((c) => c.name) ?? structure.map((c) => c.name), [result, structure]);
@@ -155,6 +159,32 @@ export function TableTab(props: {
     setView("data");
   };
 
+  /** Stages spreadsheet or CSV text as new rows. */
+  const pasteRows = (text: string) => {
+    const { rows: added, byName } = pastedRows(text, columns);
+    if (!added.length) {
+      toast("Nothing to paste: the clipboard has no rows");
+      return;
+    }
+    setReveal({ row: rows.length + staging.inserted.length });
+    setStaging((s) => S.addRows(s, added));
+    setView("data");
+    const n = added.length;
+    toast(`Staged ${n} new row${n === 1 ? "" : "s"}, matched ${byName ? "by column name" : "by position"}`, "success");
+  };
+
+  const pasteFromClipboard = async () => {
+    if (!editable || !columns.length) return;
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      setPasteBox(true);
+      return;
+    }
+    pasteRows(text);
+  };
+
   const edit = (col: number, row: number, value: Cell) => setStaging((s) => S.applyEdit(s, rows, col, row, value));
 
   const getValue = useCallback(
@@ -183,6 +213,12 @@ export function TableTab(props: {
       } else if (k === "p" && e.shiftKey) {
         e.preventDefault();
         if (pending) showPreview();
+      } else if (k === "v" && e.shiftKey && editable) {
+        // Leave text fields their own paste.
+        const el = e.target as HTMLElement | null;
+        if (el?.closest("input, textarea, [contenteditable=true]")) return;
+        e.preventDefault();
+        pasteFromClipboard();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -205,6 +241,14 @@ export function TableTab(props: {
             navigator.clipboard.writeText(JSON.stringify(obj, null, 2));
           },
         },
+        { separator: true, label: "" },
+        ...copyMenuItems(
+          selected.length,
+          () => ({ columns, rows: selected.map((r) => columns.map((_, c) => S.cellAt(staging, rows, c, r).value)) }),
+          { driver: props.driver, schema, table, primaryKey },
+          true,
+        ),
+        { label: "Paste rows from clipboard", shortcut: "⇧⌘V", disabled: !editable, action: pasteFromClipboard },
         { separator: true, label: "" },
         { label: "Set NULL", disabled: !editable, action: () => edit(col, row, null) },
         { label: "Set empty string", disabled: !editable, action: () => edit(col, row, "") },
@@ -251,6 +295,9 @@ export function TableTab(props: {
           title="Open this table in a query editor tab"
         >
           Query
+        </button>
+        <button onClick={() => setExporting(true)} disabled={!columns.length} title="Export rows to a file">
+          Export…
         </button>
         <div className="spacer" />
         {props.readOnly && <span className="faint">Read-only</span>}
@@ -373,6 +420,30 @@ export function TableTab(props: {
       </div>
 
       <ContextMenu menu={menu} onClose={() => setMenu(null)} />
+      {exporting && (
+        <ExportDialog
+          title={`Export ${table}`}
+          fileName={table}
+          scopes={[
+            { id: "view", label: "Current filter & sort" },
+            { id: "all", label: "Whole table" },
+          ]}
+          initialScope={filter.filters.length || filter.rawWhere || sort ? "view" : "all"}
+          note={pending ? "Exports what's in the database; uncommitted changes are left out." : undefined}
+          onExport={(format, scope, path) =>
+            api.exportTable(
+              sessionId,
+              scope === "view"
+                ? { schema, table, filters: filter.filters, rawWhere: filter.rawWhere, sort, keyOrder: primaryKey }
+                : { schema, table, filters: [], rawWhere: "", sort: null, keyOrder: primaryKey },
+              format,
+              path,
+            )
+          }
+          onClose={() => setExporting(false)}
+        />
+      )}
+      {pasteBox && <PasteDialog onPaste={pasteRows} onClose={() => setPasteBox(false)} />}
       {preview && (
         <Modal
           title="Pending changes"

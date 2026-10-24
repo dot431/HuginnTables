@@ -1,4 +1,5 @@
 mod dialect;
+mod export;
 #[cfg(test)]
 mod ipc_tests;
 #[cfg(test)]
@@ -282,6 +283,8 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
             delete_references,
             preview_changes,
             commit_changes,
+            export::export_table,
+            export::write_text_file,
         ])
 }
 

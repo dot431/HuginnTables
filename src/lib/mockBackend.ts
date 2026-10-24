@@ -146,6 +146,13 @@ const handlers: Record<string, (a: any) => unknown> = {
   },
   preview_changes: ({ changes }) => changes.changes.map((c: { kind: string }) => `-- ${c.kind} ${JSON.stringify(c)}`),
   commit_changes: ({ changes }) => applyChanges(changes),
+  export_table: ({ request, format, path }) => {
+    const n = select(tables[request.table] ? request : { ...request, table: "customers" }).length;
+    console.info(`mock backend: exported ${n} rows as ${format} to ${path}`);
+    return n;
+  },
+  write_text_file: ({ path, contents }) => void console.info(`mock backend: wrote ${contents.length} chars to ${path}`),
+  "plugin:dialog|save": ({ options }) => `/tmp/${options?.defaultPath ?? "export"}`,
 };
 
 export function installMockBackend() {

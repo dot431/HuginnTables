@@ -72,6 +72,11 @@ export function addRow(s: Staging, width: number): Staging {
   return { ...s, inserted: [...s.inserted, new Array(width).fill(undefined)] };
 }
 
+/** Appends new rows, e.g. pasted from a spreadsheet. */
+export function addRows(s: Staging, rows: readonly (readonly (Cell | undefined)[])[]): Staging {
+  return { ...s, inserted: [...s.inserted, ...rows] };
+}
+
 export function revertRows(s: Staging, rowsLength: number, targets: number[]): Staging {
   const edits = new Map(s.edits);
   const deleted = new Set(s.deleted);

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorView } from "@codemirror/view";
 import { api, DriverKind, errorMessage, QueryResult } from "../lib/api";
+import { guessTable, ident, RowData, SqlTarget, toDelimited, toInserts, toJson } from "../lib/formats";
 import { SplitMode, splitStatements, statementAt } from "../lib/sqlSplit";
+import { copyMenuItems, ExportDialog } from "./CopyExport";
 import { DataGrid } from "./DataGrid";
 import { SqlEditor, SqlEditorHandle } from "./SqlEditor";
 import { ContextMenu, MenuState, useDragSize } from "./ui";
@@ -21,6 +23,7 @@ export function QueryTab(props: {
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [exporting, setExporting] = useState(false);
   const editor = useRef<SqlEditorHandle>({ view: null });
   const split = useDragSize(260, 80, 2000, "y");
   const saveTimer = useRef<number>();
@@ -111,6 +114,19 @@ export function QueryTab(props: {
 
   const result = results[current];
 
+  /** Where INSERT statements built from the current result point. */
+  const sqlTarget = (r: QueryResult): SqlTarget => ({
+    driver: props.driver,
+    schema: "",
+    table: "",
+    tableRef: guessTable(r.sql) ?? ident(props.driver, "table_name"),
+  });
+
+  const resultData = (r: QueryResult, rows?: number[]): RowData => ({
+    columns: r.columns.map((c) => c.name),
+    rows: rows ? rows.map((i) => r.rows[i]) : r.rows,
+  });
+
   return (
     <div className="tab-content">
       <div className="toolbar">
@@ -172,6 +188,11 @@ export function QueryTab(props: {
                   · {result.durationMs} ms{result.notice ? ` · ${result.notice}` : ""}
                 </span>
               )}
+              {result?.hasRows && !result.error && (
+                <button onClick={() => setExporting(true)} title="Export these results to a file">
+                  Export…
+                </button>
+              )}
             </div>
             {result &&
               (result.error ? (
@@ -187,7 +208,7 @@ export function QueryTab(props: {
                       columns={result.columns.map((c) => ({ name: c.name }))}
                       rowCount={result.rows.length}
                       getValue={(c, r) => ({ value: result.rows[r][c] })}
-                      onContextMenu={(c, r, x, y) =>
+                      onContextMenu={(c, r, x, y, selected) =>
                         setMenu({
                           x,
                           y,
@@ -204,6 +225,10 @@ export function QueryTab(props: {
                               label: "Copy all as CSV",
                               action: () => navigator.clipboard.writeText(toCsv(result)),
                             },
+                            { separator: true, label: "" },
+                            ...copyMenuItems(selected.length, () => resultData(result, selected), sqlTarget(result)),
+                            { separator: true, label: "" },
+                            { label: "Export results…", action: () => setExporting(true) },
                           ],
                         })
                       }
@@ -223,6 +248,21 @@ export function QueryTab(props: {
         </>
       )}
       <ContextMenu menu={menu} onClose={() => setMenu(null)} />
+      {exporting && result?.hasRows && (
+        <ExportDialog
+          title="Export results"
+          fileName={guessTable(result.sql)?.replace(/["`[\]]/g, "").split(".").pop() ?? "results"}
+          note={result.truncated ? `Only the ${result.rows.length.toLocaleString()} rows shown are exported.` : undefined}
+          onExport={async (format, _scope, path) => {
+            const data = resultData(result);
+            const text =
+              format === "csv" ? toDelimited(data, ",") : format === "json" ? toJson(data) : toInserts(data, sqlTarget(result));
+            await api.writeTextFile(path, text + "\n");
+            return data.rows.length;
+          }}
+          onClose={() => setExporting(false)}
+        />
+      )}
     </div>
   );
 }
