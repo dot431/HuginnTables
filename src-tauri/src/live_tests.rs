@@ -22,6 +22,8 @@ fn base(driver: DriverKind) -> ConnectionConfig {
         file_path: String::new(),
         uri: String::new(),
         ssh: SshConfig::default(),
+        production: false,
+        read_only: false,
         password: Some("huginn".into()),
         ssh_password: None,
         ssh_passphrase: None,

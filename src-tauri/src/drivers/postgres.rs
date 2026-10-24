@@ -84,6 +84,14 @@ impl PostgresDriver {
         let connection_task = tokio::spawn(async move {
             let _ = connection.await;
         });
+        if cfg.read_only {
+            // A session setting rather than a startup option, which poolers
+            // such as PgBouncer refuse.
+            if let Err(e) = client.batch_execute("SET default_transaction_read_only = on").await {
+                connection_task.abort();
+                return Err(pg_error(e));
+            }
+        }
         Ok(Self {
             cancel_token: client.cancel_token(),
             client,

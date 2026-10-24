@@ -93,6 +93,12 @@ pub struct ConnectionConfig {
     pub uri: String,
     #[serde(default)]
     pub ssh: SshConfig,
+    /// Marked in red in the UI; writes ask for confirmation first.
+    #[serde(default)]
+    pub production: bool,
+    /// Refuse every write, in the grid and the query editor.
+    #[serde(default)]
+    pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,8 +117,10 @@ pub struct SessionInfo {
     pub database: String,
     pub schema: String,
     pub server_version: String,
-    /// The engine can't edit rows from the grid (BigQuery).
+    /// The engine can't edit rows from the grid (BigQuery), or the
+    /// connection is marked read-only.
     pub read_only: bool,
+    pub production: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, DriverKind, errorMessage, SessionInfo, TableInfo } from "../lib/api";
 import { QueryTab } from "./QueryTab";
+import { EnvBadges } from "./Safety";
 import { TableTab } from "./TableTab";
 import { ContextMenu, DriverBadge, MenuState, toast, useDragSize } from "./ui";
 
@@ -234,6 +235,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                 {info.serverVersion}
               </div>
             </div>
+            <EnvBadges production={info.production} readOnly={info.readOnly} short />
           </div>
           {databases.length > 0 && (
             <select value={info.database} onChange={(e) => changeDatabase(e.target.value)} title="Database">
@@ -343,6 +345,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                 schema={t.schema}
                 table={t.table}
                 readOnly={t.readOnly}
+                production={info.production}
                 active={props.active && t.id === activeTab}
                 onPendingChange={(n) => setPending((p) => (p[t.id] === n ? p : { ...p, [t.id]: n }))}
                 onOpenQuery={openQuery}
@@ -355,6 +358,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                 initialSql={t.initialSql}
                 schema={completion}
                 defaultSchema={schema}
+                production={info.production}
                 active={props.active && t.id === activeTab}
                 onSchemaChanged={loadTables}
               />

@@ -810,7 +810,7 @@ mod tests {
             id: String::new(), name: String::new(), driver: DriverKind::Mongodb, color: String::new(),
             template: String::new(), host: "db.local".into(), port: 0, user: "app".into(), database: "shop".into(),
             ssl_mode: SslMode::Require, file_path: String::new(), uri: String::new(), ssh: SshConfig::default(),
-            password: Some("p@ss word".into()), ssh_password: None, ssh_passphrase: None,
+            production: false, read_only: false, password: Some("p@ss word".into()), ssh_password: None, ssh_passphrase: None,
         };
         assert_eq!(
             connection_uri(&cfg, None).unwrap(),

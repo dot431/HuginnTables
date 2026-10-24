@@ -63,13 +63,15 @@ impl SqliteDriver {
         if path.trim().is_empty() {
             return Err(anyhow!("choose a database file"));
         }
+        let access = if cfg.read_only {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
+        };
         let conn = tokio::task::spawn_blocking(move || {
             Connection::open_with_flags(
                 &path,
-                OpenFlags::SQLITE_OPEN_READ_WRITE
-                    | OpenFlags::SQLITE_OPEN_CREATE
-                    | OpenFlags::SQLITE_OPEN_URI
-                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                access | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
         })
         .await??;

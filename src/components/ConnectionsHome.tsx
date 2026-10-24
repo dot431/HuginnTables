@@ -8,6 +8,7 @@ import {
 } from "../lib/api";
 import { templateFor } from "../lib/templates";
 import { ConnectionForm } from "./ConnectionForm";
+import { EnvBadges } from "./Safety";
 import { ContextMenu, DriverBadge, HuginnMark, MenuState, Modal, toast } from "./ui";
 
 export function ConnectionsHome(props: {
@@ -129,7 +130,10 @@ export function ConnectionsHome(props: {
               >
                 <DriverBadge driver={c.driver} color={c.color} mark={templateFor(c).mark} />
                 <div className="conn-meta">
-                  <div className="title">{c.name}</div>
+                  <div className="title">
+                    {c.name}
+                    <EnvBadges production={c.production} readOnly={c.readOnly} />
+                  </div>
                   <div className="sub">
                     {templateFor(c).title} · {connectionTarget(c)}
                     {c.ssh.enabled && ` · via SSH ${c.ssh.host}`}

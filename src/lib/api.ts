@@ -31,6 +31,10 @@ export interface ConnectionConfig {
   /** MongoDB connection string; replaces host/port/user when set. */
   uri: string;
   ssh: SshConfig;
+  /** Marked in red in the workspace; writes ask for confirmation first. */
+  production?: boolean;
+  /** Every write is refused, in the grid and the query editor. */
+  readOnly?: boolean;
   /** Only sent when changed; otherwise the backend reads the keychain. */
   password?: string;
   sshPassword?: string;
@@ -45,7 +49,9 @@ export interface SessionInfo {
   database: string;
   schema: string;
   serverVersion: string;
+  /** The grid can't edit rows: the engine can't (BigQuery) or the connection is read-only. */
   readOnly: boolean;
+  production: boolean;
 }
 
 export interface ColumnMeta {

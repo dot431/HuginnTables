@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorView } from "@codemirror/view";
-import { api, DriverKind, errorMessage, QueryResult } from "../lib/api";
+import { api, DriverKind, errorMessage, isSql, QueryResult } from "../lib/api";
+import { isWriteStatement, lacksWhere } from "../lib/sqlSafety";
 import { SplitMode, splitStatements, statementAt } from "../lib/sqlSplit";
 import { DataGrid } from "./DataGrid";
+import { ConfirmStatements } from "./Safety";
 import { SqlEditor, SqlEditorHandle } from "./SqlEditor";
 import { ContextMenu, MenuState, useDragSize } from "./ui";
 
@@ -13,6 +15,8 @@ export function QueryTab(props: {
   initialSql?: string;
   schema: Record<string, string[]>;
   defaultSchema: string;
+  /** Writes ask for confirmation before they run. */
+  production?: boolean;
   active: boolean;
   onSchemaChanged: () => void;
 }) {
@@ -21,6 +25,7 @@ export function QueryTab(props: {
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [confirm, setConfirm] = useState<{ statements: string[]; unbounded: string[]; writes: string[] } | null>(null);
   const editor = useRef<SqlEditorHandle>({ view: null });
   const split = useDragSize(260, 80, 2000, "y");
   const saveTimer = useRef<number>();
@@ -74,6 +79,18 @@ export function QueryTab(props: {
     [props.sessionId, running, props.onSchemaChanged],
   );
 
+  /** Runs `statements`, asking first about writes on production and UPDATE/DELETE without WHERE. */
+  const runChecked = useCallback(
+    (statements: string[]) => {
+      if (!statements.length || running) return;
+      const unbounded = statements.filter((s) => lacksWhere(s, props.driver));
+      const writes = props.production ? statements.filter((s) => isWriteStatement(s, props.driver)) : [];
+      if (unbounded.length || writes.length) setConfirm({ statements, unbounded, writes });
+      else execute(statements);
+    },
+    [execute, running, props.driver, props.production],
+  );
+
   const run = useCallback(
     (view: EditorView, all: boolean) => {
       const doc = view.state.doc.toString();
@@ -88,9 +105,9 @@ export function QueryTab(props: {
         if (stmt) view.dispatch({ selection: { anchor: stmt.from, head: stmt.to } });
         statements = stmt ? [stmt.text] : [];
       }
-      execute(statements);
+      runChecked(statements);
     },
-    [execute, props.driver],
+    [runChecked, props.driver],
   );
 
   useEffect(() => {
@@ -223,7 +240,55 @@ export function QueryTab(props: {
         </>
       )}
       <ContextMenu menu={menu} onClose={() => setMenu(null)} />
+      {confirm && (
+        <ConfirmRun
+          {...confirm}
+          driver={props.driver}
+          production={!!props.production}
+          onRun={() => (setConfirm(null), execute(confirm.statements))}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** Asks before running writes on production, or UPDATE/DELETE that change every row. */
+function ConfirmRun(props: {
+  statements: string[];
+  unbounded: string[];
+  writes: string[];
+  driver: DriverKind;
+  production: boolean;
+  onRun: () => void;
+  onCancel: () => void;
+}) {
+  const plural = (n: number) => (n === 1 ? "1 statement" : `${n} statements`);
+  const flagged = props.statements.filter((s) => props.unbounded.includes(s) || props.writes.includes(s));
+  return (
+    <ConfirmStatements
+      title={props.unbounded.length ? "Change every row?" : "Run on production?"}
+      statements={flagged.map((s) => (isSql(props.driver) && !s.endsWith(";") ? s + ";" : s))}
+      confirmLabel={props.production && props.writes.length ? "Run on production" : "Run anyway"}
+      onConfirm={props.onRun}
+      onCancel={props.onCancel}
+    >
+      {props.unbounded.length > 0 && (
+        <p style={{ marginTop: 0 }}>
+          {plural(props.unbounded.length)} {props.unbounded.length === 1 ? "is an" : "are"} UPDATE or DELETE without a
+          WHERE clause, which changes every row in the table.
+        </p>
+      )}
+      {props.production && props.writes.length > 0 && (
+        <p style={{ marginTop: 0 }}>
+          This is a <b className="error-text">production</b> connection. {plural(props.writes.length)}{" "}
+          {props.writes.length === 1 ? "changes" : "change"} data or schema.
+        </p>
+      )}
+      {props.statements.length > flagged.length && (
+        <p className="muted" style={{ margin: 0 }}>{plural(props.statements.length)} run in all; the ones below need a look.</p>
+      )}
+    </ConfirmStatements>
   );
 }
 

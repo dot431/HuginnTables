@@ -33,6 +33,8 @@ const tables: Record<string, Table> = {
 };
 
 let connections: ConnectionConfig[] = [];
+/** Open sessions' connections, so read-only ones can refuse writes. */
+const sessions = new Map<string, ConnectionConfig>();
 const delay = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 60));
 
 function matches(row: Cell[], t: Table, req: FetchRequest) {
@@ -96,11 +98,16 @@ const handlers: Record<string, (a: any) => unknown> = {
   },
   delete_connection: ({ id }) => void (connections = connections.filter((c) => c.id !== id)),
   test_connection: () => "17.6 (mock)",
-  connect: ({ config }) => ({
-    sessionId: crypto.randomUUID(), connectionId: config.id, name: config.name, driver: config.driver,
-    database: "postgres", schema: "public", serverVersion: "17.6 (mock)", readOnly: false,
-  }),
-  disconnect: () => undefined,
+  connect: ({ config }) => {
+    const sessionId = crypto.randomUUID();
+    sessions.set(sessionId, config);
+    return {
+      sessionId, connectionId: config.id, name: config.name, driver: config.driver,
+      database: "postgres", schema: "public", serverVersion: "17.6 (mock)",
+      readOnly: !!config.readOnly, production: !!config.production,
+    };
+  },
+  disconnect: ({ sessionId }) => void sessions.delete(sessionId),
   list_databases: () => ["postgres", "analytics"],
   switch_database: ({ database }) => ({ database, schema: "public" }),
   use_schema: () => undefined,
@@ -123,13 +130,15 @@ const handlers: Record<string, (a: any) => unknown> = {
     };
   },
   count_rows: ({ request }) => select(tables[request.table] ? request : { ...request, table: "customers" }).length,
-  run_query: ({ statements }: { statements: string[] }) =>
+  run_query: ({ sessionId, statements }: { sessionId: string; statements: string[] }) =>
     statements.map((sql): QueryResult =>
-      /^\s*select/i.test(sql)
-        ? { sql, columns: [{ name: "n" }, { name: "label" }], rows: [["1", "one"], ["2", null]], hasRows: true, rowsAffected: 2, durationMs: 1, truncated: false }
-        : /fail/i.test(sql)
-          ? { sql, columns: [], rows: [], hasRows: false, rowsAffected: 0, durationMs: 1, truncated: false, error: 'ERROR: relation "fail" does not exist' }
-          : { sql, columns: [], rows: [], hasRows: false, rowsAffected: 3, durationMs: 1, truncated: false },
+      sessions.get(sessionId)?.readOnly && !/^\s*select/i.test(sql)
+        ? { sql, columns: [], rows: [], hasRows: false, rowsAffected: 0, durationMs: 0, truncated: false, error: "This connection is read-only; the statement was not run." }
+        : /^\s*select/i.test(sql)
+          ? { sql, columns: [{ name: "n" }, { name: "label" }], rows: [["1", "one"], ["2", null]], hasRows: true, rowsAffected: 2, durationMs: 1, truncated: false }
+          : /fail/i.test(sql)
+            ? { sql, columns: [], rows: [], hasRows: false, rowsAffected: 0, durationMs: 1, truncated: false, error: 'ERROR: relation "fail" does not exist' }
+            : { sql, columns: [], rows: [], hasRows: false, rowsAffected: 3, durationMs: 1, truncated: false },
     ),
   cancel_query: () => undefined,
   // Pretend every customer has two orders with three lines each, and an invoice.
@@ -145,7 +154,10 @@ const handlers: Record<string, (a: any) => unknown> = {
     };
   },
   preview_changes: ({ changes }) => changes.changes.map((c: { kind: string }) => `-- ${c.kind} ${JSON.stringify(c)}`),
-  commit_changes: ({ changes }) => applyChanges(changes),
+  commit_changes: ({ sessionId, changes }) => {
+    if (sessions.get(sessionId)?.readOnly) throw "this connection is read-only";
+    return applyChanges(changes);
+  },
 };
 
 export function installMockBackend() {

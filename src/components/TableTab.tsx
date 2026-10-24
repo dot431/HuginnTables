@@ -3,6 +3,7 @@ import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, Q
 import * as S from "../lib/staging";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
+import { ConfirmStatements } from "./Safety";
 import { ContextMenu, MenuState, Modal, toast } from "./ui";
 
 const PAGE_SIZES = [100, 300, 1000, 5000];
@@ -32,6 +33,8 @@ export function TableTab(props: {
   schema: string;
   table: string;
   readOnly: boolean;
+  /** Commits show their statements and ask first. */
+  production?: boolean;
   active: boolean;
   onPendingChange: (pending: number) => void;
   onOpenQuery: (sql: string) => void;
@@ -53,6 +56,7 @@ export function TableTab(props: {
   const [showDetail, setShowDetail] = useState(false);
   const [preview, setPreview] = useState<{ sql: string[]; cascade: boolean } | null>(null);
   const [impact, setImpact] = useState<DeleteImpact | null>(null);
+  const [confirmProd, setConfirmProd] = useState<{ sql: string[]; cascade: boolean } | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [committing, setCommitting] = useState(false);
   const loadSeq = useRef(0);
@@ -115,9 +119,10 @@ export function TableTab(props: {
 
   /**
    * Commits the staged changes. Unless `cascade` is set, deleting rows that
-   * other tables still point at stops here and asks what to do.
+   * other tables still point at stops here and asks what to do. On production
+   * the statements are shown for confirmation first, unless `confirmed`.
    */
-  const commit = async (cascade = false) => {
+  const commit = async (cascade = false, confirmed = false) => {
     if (!pending || committing) return;
     setCommitting(true);
     try {
@@ -130,6 +135,11 @@ export function TableTab(props: {
         }
       }
       setImpact(null);
+      if (props.production && !confirmed) {
+        setConfirmProd({ sql: await api.previewChanges(sessionId, set), cascade });
+        return;
+      }
+      setConfirmProd(null);
       const affected = await api.commitChanges(sessionId, set);
       toast(`Committed — ${affected} row${affected === 1 ? "" : "s"} affected`, "success");
       setStaging(S.emptyStaging());
@@ -390,7 +400,13 @@ export function TableTab(props: {
               <div className="spacer" />
               <button onClick={() => navigator.clipboard.writeText(previewText(preview.sql))}>Copy</button>
               <button onClick={() => setPreview(null)}>Close</button>
-              <button className="primary" onClick={() => (setPreview(null), commit(preview.cascade))}>Commit</button>
+              {props.production ? (
+                <button className="primary danger-fill" onClick={() => (setPreview(null), commit(preview.cascade, true))}>
+                  Commit to production
+                </button>
+              ) : (
+                <button className="primary" onClick={() => (setPreview(null), commit(preview.cascade))}>Commit</button>
+              )}
             </>
           }
         >
@@ -408,6 +424,19 @@ export function TableTab(props: {
           onCascade={() => commit(true)}
           onClose={() => setImpact(null)}
         />
+      )}
+      {confirmProd && (
+        <ConfirmStatements
+          title="Commit to production?"
+          statements={[previewText(confirmProd.sql)]}
+          confirmLabel={`Commit ${pending} change${pending === 1 ? "" : "s"}`}
+          busy={committing}
+          onConfirm={() => commit(confirmProd.cascade, true)}
+          onCancel={() => setConfirmProd(null)}
+        >
+          <b>{table}</b> is on a production connection. These statements run{" "}
+          {props.driver === "redis" ? "atomically" : props.driver === "mongodb" ? "one at a time" : "in a single transaction"}:
+        </ConfirmStatements>
       )}
     </div>
   );

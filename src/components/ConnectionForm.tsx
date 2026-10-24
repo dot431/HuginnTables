@@ -174,6 +174,22 @@ export function ConnectionForm(props: {
           ))}
         </div>
 
+        <label>Safety</label>
+        <div className="safety-options">
+          <label>
+            <input type="checkbox" checked={!!cfg.production} onChange={(e) => set("production", e.target.checked)} />
+            <span>
+              Production <span className="faint">— marked in red; writes show their SQL and ask first</span>
+            </span>
+          </label>
+          <label>
+            <input type="checkbox" checked={!!cfg.readOnly} onChange={(e) => set("readOnly", e.target.checked)} />
+            <span>
+              Read-only <span className="faint">— refuse every write, from the grid and the query editor</span>
+            </span>
+          </label>
+        </div>
+
         {d === "mongodb" && (
           <>
             <label>Connect with</label>

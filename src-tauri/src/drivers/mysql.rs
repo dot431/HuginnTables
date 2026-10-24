@@ -78,7 +78,7 @@ impl MysqlDriver {
             anyhow::Ok((conn, opts))
         };
 
-        let (conn, opts) = match cfg.ssl_mode {
+        let (mut conn, opts) = match cfg.ssl_mode {
             SslMode::Disable => attempt(base).await?,
             SslMode::Require => attempt(base.ssl_opts(tls(false))).await?,
             SslMode::VerifyFull => attempt(base.ssl_opts(tls(true))).await?,
@@ -87,6 +87,9 @@ impl MysqlDriver {
                 Err(_) => attempt(base).await?,
             },
         };
+        if cfg.read_only {
+            conn.query_drop("SET SESSION TRANSACTION READ ONLY").await?;
+        }
         Ok(Self {
             connection_id: conn.id(),
             conn: Mutex::new(Some(conn)),

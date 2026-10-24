@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
+use mongodb::bson::Bson;
 use tokio::sync::RwLock;
 
 use crate::drivers::{self, Browser, Driver, Engine};
@@ -55,7 +56,8 @@ impl Session {
             database: engine.database,
             schema: engine.schema,
             server_version: engine.server_version,
-            read_only: engine.read_only,
+            read_only: engine.read_only || cfg.read_only,
+            production: cfg.production,
         };
         Ok(Self {
             config: cfg,
@@ -151,6 +153,14 @@ impl Session {
         let mut out = Vec::new();
         for sql in statements {
             let started = Instant::now();
+            if self.config.read_only && refused_when_read_only(self.config.driver, sql) {
+                out.push(QueryResult {
+                    sql: sql.clone(),
+                    error: Some("This connection is read-only; the statement was not run.".into()),
+                    ..Default::default()
+                });
+                break;
+            }
             match driver.query(sql).await {
                 Ok(results) => out.extend(results),
                 Err(e) => {
@@ -184,5 +194,155 @@ impl Session {
 
     pub async fn cancel(&self) -> Result<()> {
         self.driver().await.cancel().await
+    }
+}
+
+/// Statements that change data or schema start with one of these.
+const WRITE_KEYWORDS: &[&str] = &[
+    "INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "REPLACE", "CREATE", "ALTER", "DROP", "TRUNCATE",
+    "RENAME", "GRANT", "REVOKE", "COMMENT", "CALL", "DO", "COPY", "LOAD", "IMPORT", "REFRESH", "REINDEX",
+    "VACUUM", "CLUSTER", "EXPORT",
+];
+
+/// Redis commands that change keys or server state.
+const REDIS_WRITES: &[&str] = &[
+    "SET", "SETNX", "SETEX", "PSETEX", "MSET", "MSETNX", "GETSET", "GETDEL", "GETEX", "APPEND", "SETRANGE",
+    "INCR", "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY", "DEL", "UNLINK", "EXPIRE", "EXPIREAT", "PEXPIRE",
+    "PEXPIREAT", "PERSIST", "RENAME", "RENAMENX", "MOVE", "COPY", "RESTORE", "HSET", "HSETNX", "HMSET", "HDEL",
+    "HINCRBY", "HINCRBYFLOAT", "LPUSH", "LPUSHX", "RPUSH", "RPUSHX", "LPOP", "RPOP", "LSET", "LREM", "LTRIM",
+    "LINSERT", "LMOVE", "RPOPLPUSH", "BLPOP", "BRPOP", "BLMOVE", "SADD", "SREM", "SPOP", "SMOVE", "SINTERSTORE",
+    "SUNIONSTORE", "SDIFFSTORE", "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZREMRANGEBYRANK",
+    "ZREMRANGEBYSCORE", "ZREMRANGEBYLEX", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE", "ZRANGESTORE", "XADD",
+    "XDEL", "XTRIM", "XGROUP", "XACK", "XCLAIM", "XAUTOCLAIM", "PFADD", "PFMERGE", "SETBIT", "BITOP", "BITFIELD",
+    "GEOADD", "JSON.SET", "JSON.DEL", "FLUSHDB", "FLUSHALL", "EVAL", "EVALSHA", "FCALL", "CONFIG", "SWAPDB",
+];
+
+/// MongoDB shell methods and database commands that change data or schema.
+const MONGO_WRITES: &[&str] = &[
+    "insertOne", "insertMany", "updateOne", "updateMany", "replaceOne", "deleteOne", "deleteMany", "drop",
+    "createIndex", "insert", "update", "delete", "findAndModify", "create", "createIndexes", "dropIndexes",
+    "dropDatabase", "renameCollection", "collMod", "eval",
+];
+
+/// On a read-only connection, refuses writes from the query editor before they
+/// reach the server. Postgres, MySQL and SQLite also enforce read-only mode
+/// themselves; this catches the statements that would turn it off again, and
+/// is the only guard for BigQuery, Redis and MongoDB.
+fn refused_when_read_only(driver: DriverKind, sql: &str) -> bool {
+    match driver {
+        DriverKind::Redis => {
+            let args: Vec<String> = drivers::redis::tokenize(sql)
+                .unwrap_or_default()
+                .iter()
+                .take(2)
+                .map(|a| a.to_uppercase())
+                .collect();
+            return match args.as_slice() {
+                [config, get] if config == "CONFIG" && get == "GET" => false,
+                [name, ..] => REDIS_WRITES.contains(&name.as_str()),
+                [] => false,
+            };
+        }
+        DriverKind::Mongodb => {
+            // Shell calls by method name; database commands by their first key.
+            let text = sql.trim().trim_end_matches(';').trim();
+            let command = |b: Option<&Bson>| match b {
+                Some(Bson::Document(d)) => d.keys().next().cloned(),
+                _ => None,
+            };
+            let name = if text.starts_with('{') {
+                command(drivers::mongo::parse_json5(text).ok().as_ref())
+            } else {
+                drivers::mongo::parse_call(text).ok().and_then(|call| match call.method.as_str() {
+                    "runCommand" | "adminCommand" => command(call.args.first()),
+                    _ => Some(call.method),
+                })
+            };
+            return name.is_some_and(|n| MONGO_WRITES.contains(&n.as_str()));
+        }
+        _ => {}
+    }
+    let code = strip_sql(sql, matches!(driver, DriverKind::Mysql | DriverKind::Bigquery)).to_uppercase();
+    let words: Vec<&str> = code
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let lifts_read_only = words.windows(2).any(|w| w == ["READ", "WRITE"])
+        || words.iter().any(|w| w.ends_with("TRANSACTION_READ_ONLY") || *w == "TX_READ_ONLY");
+    lifts_read_only || words.first().is_some_and(|w| WRITE_KEYWORDS.contains(w))
+}
+
+/// The statement without comments and with every quoted string or
+/// identifier blanked, so only keywords and names are left. `mysql` adds #
+/// comments and backslash escapes (MySQL and BigQuery).
+fn strip_sql(sql: &str, mysql: bool) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '-' | '#' if (c == '#' && mysql) || (c == '-' && chars.peek() == Some(&'-')) => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+                out.push(' ');
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = ' ';
+                for c in chars.by_ref() {
+                    if prev == '*' && c == '/' {
+                        break;
+                    }
+                    prev = c;
+                }
+                out.push(' ');
+            }
+            '\'' | '"' | '`' => {
+                while let Some(n) = chars.next() {
+                    if mysql && n == '\\' && c != '`' {
+                        chars.next();
+                    } else if n == c {
+                        if chars.peek() == Some(&c) {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                out.push_str(" _ ");
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_writes_on_read_only_connections() {
+        let pg = DriverKind::Postgres;
+        assert!(!refused_when_read_only(pg, "SELECT * FROM t WHERE note = 'drop table'"));
+        assert!(!refused_when_read_only(pg, "-- delete later\nSELECT 1"));
+        assert!(!refused_when_read_only(pg, "SET search_path = app"));
+        assert!(refused_when_read_only(pg, "/* hi */ delete from t"));
+        assert!(refused_when_read_only(pg, "SET default_transaction_read_only = off"));
+        assert!(refused_when_read_only(pg, "begin read  write"));
+        assert!(refused_when_read_only(DriverKind::Mysql, "SET SESSION TRANSACTION READ WRITE"));
+        assert!(refused_when_read_only(DriverKind::Mysql, "set @@session.transaction_read_only = 0"));
+        assert!(refused_when_read_only(DriverKind::Bigquery, "INSERT INTO `p.d.t` VALUES (1)"));
+        assert!(refused_when_read_only(DriverKind::Redis, "del key"));
+        assert!(!refused_when_read_only(DriverKind::Redis, "GET key"));
+        assert!(!refused_when_read_only(DriverKind::Redis, "config get maxmemory"));
+        let mongo = DriverKind::Mongodb;
+        assert!(refused_when_read_only(mongo, "db.users.deleteMany({})"));
+        assert!(refused_when_read_only(mongo, "db.runCommand({ drop: 'users' })"));
+        assert!(refused_when_read_only(mongo, "{ insert: 'users', documents: [{}] }"));
+        assert!(!refused_when_read_only(mongo, "db.users.find({ deleted: true })"));
+        assert!(!refused_when_read_only(mongo, "show collections"));
     }
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, ConnectionConfig, errorMessage, SessionInfo } from "./lib/api";
 import { ConnectionsHome } from "./components/ConnectionsHome";
+import { EnvBadges, ProductionBar } from "./components/Safety";
 import { SettingsModal } from "./components/Settings";
 import { Workspace } from "./components/Workspace";
 import { Toasts, toast } from "./components/ui";
@@ -63,12 +64,13 @@ export default function App() {
           {sessions.map(({ info, color }) => (
             <div
               key={info.sessionId}
-              className={`session-chip ${active === info.sessionId ? "active" : ""}`}
+              className={`session-chip ${active === info.sessionId ? "active" : ""} ${info.production ? "production" : ""}`}
               onClick={() => setActive(info.sessionId)}
               title={`${info.name} — ${info.serverVersion}`}
             >
               <span className="dot" style={{ background: color }} />
               <span className="name">{info.name}</span>
+              <EnvBadges production={info.production} short />
               <span
                 className="close"
                 onClick={(e) => {
@@ -86,8 +88,9 @@ export default function App() {
       {sessions.map(({ info, color }) => (
         <div
           key={info.sessionId}
-          style={{ display: active === info.sessionId ? "flex" : "none", flex: 1, minHeight: 0 }}
+          style={{ display: active === info.sessionId ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}
         >
+          {info.production && <ProductionBar info={info} />}
           <Workspace session={info} color={color} active={active === info.sessionId} onClose={() => close(info.sessionId)} />
         </div>
       ))}
