@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { api, ColumnInfo, DriverKind, errorMessage, IndexInfo, SchemaChange } from "../lib/api";
+import { api, ColumnInfo, DriverKind, errorMessage, ForeignKeyInfo, IndexInfo, SchemaChange, TableForeignKeys } from "../lib/api";
 import { Modal, toast } from "./ui";
 
 /** Engines whose indexes, DDL and schema changes the Structure tab shows. */
@@ -21,6 +21,22 @@ const TYPE_SUGGESTIONS: Partial<Record<DriverKind, string[]>> = {
 
 /** Longest identifier Postgres keeps (MySQL allows 64). */
 const MAX_NAME = 63;
+
+/** One foreign key: this table's own (outgoing) or another table's pointing here (incoming). */
+function ForeignKeyRow({ fk, schema, incoming }: { fk: ForeignKeyInfo; schema: string; incoming: boolean }) {
+  const name = (s: string, t: string) => (s && s !== schema ? `${s}.${t}` : t);
+  return (
+    <tr>
+      <td style={{ fontWeight: 500 }}>{fk.name}</td>
+      <td className="muted">{incoming ? "← from " + name(fk.schema, fk.table) : "→ out"}</td>
+      <td className="mono">{fk.columns.join(", ")}</td>
+      <td className="mono">
+        {name(fk.parentSchema, fk.parentTable)} ({fk.parentColumns.join(", ")})
+      </td>
+      <td className="mono muted">{fk.onDelete}</td>
+    </tr>
+  );
+}
 
 type Dialog = { kind: "addColumn" } | { kind: "addIndex" } | { kind: "dropIndex"; index: IndexInfo };
 
@@ -46,6 +62,8 @@ export function StructureView(props: {
   const [indexError, setIndexError] = useState<string | null>(null);
   const [ddl, setDdl] = useState<string | null>(null);
   const [ddlError, setDdlError] = useState<string | null>(null);
+  const [foreignKeys, setForeignKeys] = useState<TableForeignKeys | null>(null);
+  const [fkError, setFkError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
 
   const load = useCallback(() => {
@@ -53,6 +71,10 @@ export function StructureView(props: {
     api.tableIndexes(sessionId, schema, table).then(
       (ix) => (setIndexes(ix), setIndexError(null)),
       (e) => setIndexError(errorMessage(e)),
+    );
+    api.tableForeignKeys(sessionId, schema, table).then(
+      (fks) => (setForeignKeys(fks), setFkError(null)),
+      (e) => setFkError(errorMessage(e)),
     );
     api.tableDdl(sessionId, schema, table).then(
       (text) => (setDdl(text), setDdlError(null)),
@@ -170,14 +192,39 @@ export function StructureView(props: {
         </section>
       )}
 
-      {/* ---- Foreign keys ------------------------------------------------
-          Placeholder for the Foreign keys section (outgoing and incoming),
-          between Indexes and DDL. Wire it to
-          `api.tableForeignKeys(sessionId, schema, table)` → { outgoing, incoming }
-          of ForeignKeyInfo { name, schema, table, columns, parentSchema,
-          parentTable, parentColumns, onDelete } once that branch is merged;
-          reload it in `load` above so it follows schema changes.
-          ------------------------------------------------------------------ */}
+      {tools && (
+        <section className="structure-section">
+          <div className="structure-head">
+            <h3>Foreign keys</h3>
+            {foreignKeys && <span className="faint">{foreignKeys.outgoing.length + foreignKeys.incoming.length}</span>}
+          </div>
+          {fkError ? (
+            <div className="structure-note error-text">{fkError}</div>
+          ) : !foreignKeys ? (
+            <div className="structure-note faint">Loading…</div>
+          ) : !foreignKeys.outgoing.length && !foreignKeys.incoming.length ? (
+            <div className="structure-note faint">No foreign keys</div>
+          ) : (
+            <table className="plain">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Direction</th>
+                  <th>Columns</th>
+                  <th>References</th>
+                  <th>On delete</th>
+                </tr>
+              </thead>
+              <tbody>
+                {foreignKeys.outgoing.map((fk) => <ForeignKeyRow key={`o:${fk.name}`} fk={fk} schema={schema} incoming={false} />)}
+                {foreignKeys.incoming.map((fk) => (
+                  <ForeignKeyRow key={`i:${fk.schema}.${fk.table}.${fk.name}`} fk={fk} schema={schema} incoming />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
 
       {tools && (
         <section className="structure-section">
