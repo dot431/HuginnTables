@@ -167,7 +167,7 @@ impl Session {
         out
     }
 
-    pub async fn delete_references(&self, set: &ChangeSet) -> Result<Vec<RowReference>> {
+    pub async fn delete_references(&self, set: &ChangeSet) -> Result<DeleteImpact> {
         self.browser().await.delete_references(set).await
     }
 

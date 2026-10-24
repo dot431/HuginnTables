@@ -150,6 +150,7 @@ async fn exercise(s: &Session, schema: &str) {
 /// cascading one removes them, deepest first.
 async fn cascade(s: &Session, schema: &str) {
     exec(s, &[
+        "DROP TABLE IF EXISTS nests",
         "DROP TABLE IF EXISTS sightings",
         "DROP TABLE IF EXISTS ravens",
         "DROP TABLE IF EXISTS owners",
@@ -158,9 +159,11 @@ async fn cascade(s: &Session, schema: &str) {
          FOREIGN KEY (clan, owner) REFERENCES owners (clan, name))",
         "CREATE TABLE sightings (raven int NOT NULL, at varchar(20), \
          FOREIGN KEY (raven) REFERENCES ravens (id) ON DELETE CASCADE)",
+        "CREATE TABLE nests (id int PRIMARY KEY, raven int, FOREIGN KEY (raven) REFERENCES ravens (id) ON DELETE SET NULL)",
         "INSERT INTO owners VALUES ('aesir', 'Odin'), ('aesir', 'Loki')",
         "INSERT INTO ravens VALUES (1, 'aesir', 'Odin'), (2, 'aesir', 'Odin'), (3, 'aesir', 'Loki')",
         "INSERT INTO sightings VALUES (1, 'dawn'), (1, 'dusk'), (2, 'noon'), (3, 'night')",
+        "INSERT INTO nests VALUES (1, 1), (2, 3)",
     ]).await;
     let mut set = ChangeSet {
         schema: schema.into(),
@@ -169,19 +172,22 @@ async fn cascade(s: &Session, schema: &str) {
         cascade: false,
         changes: vec![RowChange::Delete { key: vec![cv("clan", Some("aesir")), cv("name", Some("Odin"))] }],
     };
-    let refs = s.delete_references(&set).await.unwrap();
+    let impact = s.delete_references(&set).await.unwrap();
+    assert_eq!(impact.cascaded_rows, 5);
+    let refs = impact.references;
     let summary: Vec<_> = refs.iter().map(|r| (r.table.as_str(), r.parent_table.as_str(), r.depth, r.rows)).collect();
-    assert_eq!(summary, [("ravens", "owners", 1, 2), ("sightings", "ravens", 2, 3)]);
+    assert_eq!(summary, [("ravens", "owners", 1, 2), ("nests", "ravens", 2, 1), ("sightings", "ravens", 2, 3)]);
     assert_eq!(refs[0].columns, ["clan", "owner"]);
-    assert_eq!(refs[1].on_delete, "CASCADE");
+    assert_eq!((refs[1].on_delete.as_str(), refs[2].on_delete.as_str()), ("SET NULL", "CASCADE"));
 
     assert!(s.commit_changes(&set).await.is_err());
     set.cascade = true;
     assert_eq!(s.commit_changes(&set).await.unwrap(), 6);
     let left = s
-        .run_statements(&["SELECT (SELECT COUNT(*) FROM owners), (SELECT COUNT(*) FROM ravens), (SELECT COUNT(*) FROM sightings)".into()])
+        .run_statements(&["SELECT (SELECT COUNT(*) FROM owners), (SELECT COUNT(*) FROM ravens), (SELECT COUNT(*) FROM sightings), \
+             (SELECT COUNT(*) FROM nests WHERE raven IS NULL)".into()])
         .await;
-    assert_eq!(left[0].rows[0], [Some("1".into()), Some("1".into()), Some("1".into())]);
+    assert_eq!(left[0].rows[0], [Some("1".into()), Some("1".into()), Some("1".into()), Some("1".into())]);
 }
 
 #[tokio::test]

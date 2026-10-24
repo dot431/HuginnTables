@@ -5,11 +5,6 @@ use anyhow::{bail, Result};
 
 use crate::model::{Cell, CellValue, ChangeSet, DriverKind, FetchRequest, Filter, RowChange};
 
-/// Deeper foreign-key chains than this aren't followed when cascading.
-const MAX_CASCADE_DEPTH: usize = 8;
-/// Upper bound on the DELETE statements a cascade may add.
-const MAX_CASCADE_STEPS: usize = 200;
-
 /// `table(columns)` references `parent_table(parent_columns)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForeignKey {
@@ -50,6 +45,12 @@ impl ForeignKey {
             }
         }
         out
+    }
+
+    /// ON DELETE SET NULL / SET DEFAULT: the database keeps the referencing
+    /// rows and clears the reference itself, so they never block a delete.
+    pub fn sets_null(&self) -> bool {
+        self.on_delete.starts_with("SET ")
     }
 }
 
@@ -430,11 +431,8 @@ impl Dialect {
         }
     }
 
-    /// Every foreign-key path that leads to the rows `set` deletes, deepest
-    /// first, so deleting each step's rows in order clears the way for the
-    /// staged deletes. Paths that come back to a table already on them
-    /// (self-references, cycles) aren't followed.
-    pub fn cascade_steps(&self, set: &ChangeSet, fks: &[ForeignKey]) -> Result<Vec<CascadeStep>> {
+    /// The rows `set` deletes, as a condition on its table.
+    pub fn deleted_rows_filter(&self, set: &ChangeSet) -> Option<String> {
         let deleted: Vec<String> = set
             .changes
             .iter()
@@ -445,46 +443,30 @@ impl Dialect {
                 _ => None,
             })
             .collect();
-        let mut steps = Vec::new();
-        if !deleted.is_empty() {
-            let mut path = vec![(set.schema.clone(), set.table.clone())];
-            self.walk_references(&deleted.join(" OR "), fks, &mut path, &mut steps)?;
-        }
-        Ok(steps)
+        (!deleted.is_empty()).then(|| deleted.join(" OR "))
     }
 
-    /// Adds the steps for rows referencing the rows of the last table on
-    /// `path` that `filter` selects.
-    fn walk_references(
-        &self,
-        filter: &str,
-        fks: &[ForeignKey],
-        path: &mut Vec<(String, String)>,
-        steps: &mut Vec<CascadeStep>,
-    ) -> Result<()> {
-        let (schema, table) = path.last().cloned().expect("path starts at the edited table");
-        for fk in fks {
-            if !self.same_table((&fk.parent_schema, &fk.parent_table), (&schema, &table))
-                || path.iter().any(|(s, t)| self.same_table((s, t), (&fk.schema, &fk.table)))
-            {
-                continue;
-            }
-            if path.len() > MAX_CASCADE_DEPTH || steps.len() >= MAX_CASCADE_STEPS {
-                bail!("{table} has too many layers of dependent tables to cascade the delete");
-            }
-            let child_filter = format!(
-                "{} IN (SELECT {} FROM {} WHERE {filter})",
-                self.key_tuple(&fk.columns),
-                fk.parent_columns.iter().map(|c| self.ident(c)).collect::<Vec<_>>().join(", "),
-                self.table(&schema, &table),
-            );
-            let depth = path.len() as u32;
-            path.push((fk.schema.clone(), fk.table.clone()));
-            self.walk_references(&child_filter, fks, path, steps)?;
-            path.pop();
-            steps.push(CascadeStep { fk: fk.clone(), depth, filter: child_filter });
-        }
-        Ok(())
+    /// The foreign keys pointing at the last table of `path`, except those
+    /// coming from a table already on it (self-references, cycles).
+    pub fn references_to<'a>(&self, fks: &'a [ForeignKey], path: &[(String, String)]) -> Vec<&'a ForeignKey> {
+        let (schema, table) = path.last().expect("path starts at the edited table");
+        fks.iter()
+            .filter(|fk| {
+                self.same_table((&fk.parent_schema, &fk.parent_table), (schema, table))
+                    && !path.iter().any(|(s, t)| self.same_table((s, t), (&fk.schema, &fk.table)))
+            })
+            .collect()
+    }
+
+    /// The rows of `fk.table` pointing at the parent rows `parent_filter` selects.
+    pub fn reference_step(&self, fk: &ForeignKey, parent_filter: &str, depth: u32) -> CascadeStep {
+        let filter = format!(
+            "{} IN (SELECT {} FROM {} WHERE {parent_filter})",
+            self.key_tuple(&fk.columns),
+            fk.parent_columns.iter().map(|c| self.ident(c)).collect::<Vec<_>>().join(", "),
+            self.table(&fk.parent_schema, &fk.parent_table),
+        );
+        CascadeStep { fk: fk.clone(), depth, filter }
     }
 
     pub fn cascade_count_sql(&self, step: &CascadeStep) -> String {
@@ -492,7 +474,8 @@ impl Dialect {
     }
 
     /// Statements for `set`. The `cascade` steps' deletes run right before the
-    /// first staged delete.
+    /// first staged delete; steps the database resolves with SET NULL/DEFAULT
+    /// are left to it.
     pub fn change_statements(&self, set: &ChangeSet, cascade: &[CascadeStep]) -> Result<Vec<String>> {
         let table = self.table(&set.schema, &set.table);
         let mut out = Vec::with_capacity(set.changes.len() + cascade.len());
@@ -537,7 +520,7 @@ impl Dialect {
                     if key.is_empty() {
                         bail!("cannot delete a row of {table} without identifying columns");
                     }
-                    for step in cascade.by_ref() {
+                    for step in cascade.by_ref().filter(|s| !s.fk.sets_null()) {
                         out.push(format!(
                             "DELETE FROM {} WHERE {}",
                             self.table(&step.fk.schema, &step.fk.table),
@@ -663,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn cascade_deletes_dependants_deepest_first() {
+    fn cascade_steps_follow_references() {
         let pg = Dialect(SqlEngine::Postgres);
         let fks = vec![
             fk("orders", &["customer_id"], "customers", &["id"]),
@@ -671,7 +654,14 @@ mod tests {
             // Self-reference and a cycle back to the start aren't followed.
             fk("customers", &["referred_by"], "customers", &["id"]),
             fk("customers", &["last_order"], "orders", &["id"]),
+            ForeignKey { on_delete: "SET NULL".into(), ..fk("notes", &["order_id"], "orders", &["id"]) },
         ];
+        let mut path = vec![("public".to_string(), "customers".to_string())];
+        let names = |refs: Vec<&ForeignKey>| refs.into_iter().map(|f| f.table.clone()).collect::<Vec<_>>();
+        assert_eq!(names(pg.references_to(&fks, &path)), ["orders"]);
+        path.push(("public".into(), "orders".into()));
+        assert_eq!(names(pg.references_to(&fks, &path)), ["lines", "notes"]);
+
         let set = ChangeSet {
             schema: "public".into(),
             table: "customers".into(),
@@ -683,19 +673,24 @@ mod tests {
                 RowChange::Delete { key: vec![cv("id", Some("3"))] },
             ],
         };
-        let steps = pg.cascade_steps(&set, &fks).unwrap();
-        assert_eq!(steps.iter().map(|s| (s.fk.table.as_str(), s.depth)).collect::<Vec<_>>(), [("lines", 2), ("orders", 1)]);
-        let orders = "\"customer_id\" IN (SELECT \"id\" FROM \"public\".\"customers\" WHERE (\"id\" = '2') OR (\"id\" = '3'))";
+        let root = pg.deleted_rows_filter(&set).unwrap();
+        assert_eq!(root, "(\"id\" = '2') OR (\"id\" = '3')");
+        let orders = pg.reference_step(&fks[0], &root, 1);
+        let lines = pg.reference_step(&fks[1], &orders.filter, 2);
+        let notes = pg.reference_step(&fks[4], &orders.filter, 2);
+        let o = "\"customer_id\" IN (SELECT \"id\" FROM \"public\".\"customers\" WHERE (\"id\" = '2') OR (\"id\" = '3'))";
+        assert_eq!(orders.filter, o);
+        assert_eq!(pg.cascade_count_sql(&orders), format!("SELECT COUNT(*) FROM \"public\".\"orders\" WHERE {o}"));
+        // Deepest first; the SET NULL step is left to the database.
         assert_eq!(
-            pg.change_statements(&set, &steps).unwrap(),
+            pg.change_statements(&set, &[notes, lines, orders]).unwrap(),
             vec![
                 "UPDATE \"public\".\"customers\" SET \"name\" = 'x' WHERE \"id\" = '1'".to_string(),
-                format!("DELETE FROM \"public\".\"lines\" WHERE (\"order_id\", \"shop\") IN (SELECT \"id\", \"shop\" FROM \"public\".\"orders\" WHERE {orders})"),
-                format!("DELETE FROM \"public\".\"orders\" WHERE {orders}"),
+                format!("DELETE FROM \"public\".\"lines\" WHERE (\"order_id\", \"shop\") IN (SELECT \"id\", \"shop\" FROM \"public\".\"orders\" WHERE {o})"),
+                format!("DELETE FROM \"public\".\"orders\" WHERE {o}"),
                 "DELETE FROM \"public\".\"customers\" WHERE \"id\" = '2'".to_string(),
                 "DELETE FROM \"public\".\"customers\" WHERE \"id\" = '3'".to_string(),
             ]
         );
-        assert_eq!(pg.cascade_count_sql(&steps[1]), format!("SELECT COUNT(*) FROM \"public\".\"orders\" WHERE {orders}"));
     }
 }

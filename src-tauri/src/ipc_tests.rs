@@ -98,32 +98,39 @@ fn ui_payloads_round_trip_through_ipc() {
         "CREATE TABLE owners (name TEXT PRIMARY KEY)",
         "CREATE TABLE ravens (id INTEGER PRIMARY KEY, owner TEXT REFERENCES owners)",
         "CREATE TABLE sightings (raven INTEGER NOT NULL REFERENCES ravens(id), at TEXT)",
+        "CREATE TABLE nests (id INTEGER PRIMARY KEY, raven INTEGER REFERENCES ravens(id) ON DELETE SET NULL)",
         "INSERT INTO owners VALUES ('Odin'), ('Loki')",
         "INSERT INTO ravens VALUES (1, 'Odin'), (2, 'Odin'), (3, 'Loki')",
         "INSERT INTO sightings VALUES (1, 'dawn'), (1, 'dusk'), (2, 'noon'), (3, 'night')",
+        "INSERT INTO nests VALUES (1, 1), (2, 3)",
     ]}))
     .unwrap();
     let mut doomed = json!({
         "schema": "main", "table": "owners", "keyIsPrimary": true,
         "changes": [{ "kind": "delete", "key": [{ "column": "name", "value": "Odin" }] }]
     });
-    let refs = call(&w, "delete_references", json!({ "sessionId": sid, "changes": doomed })).unwrap();
+    let impact = call(&w, "delete_references", json!({ "sessionId": sid, "changes": doomed })).unwrap();
+    assert_eq!(impact["cascadedRows"], 5);
+    let refs = &impact["references"];
     assert_eq!(refs[0]["table"], "ravens");
     assert_eq!(refs[0]["columns"], json!(["owner"]));
     assert_eq!(refs[0]["parentTable"], "owners");
     assert_eq!(refs[0]["onDelete"], "NO ACTION");
     assert_eq!((refs[0]["depth"].clone(), refs[0]["rows"].clone()), (json!(1), json!(2)));
-    assert_eq!((refs[1]["table"].clone(), refs[1]["depth"].clone(), refs[1]["rows"].clone()), (json!("sightings"), json!(2), json!(3)));
+    // SET NULL rows are reported but stay; the database clears their reference.
+    assert_eq!((refs[1]["table"].clone(), refs[1]["onDelete"].clone(), refs[1]["rows"].clone()), (json!("nests"), json!("SET NULL"), json!(1)));
+    assert_eq!((refs[2]["table"].clone(), refs[2]["depth"].clone(), refs[2]["rows"].clone()), (json!("sightings"), json!(2), json!(3)));
 
     let refused = call(&w, "commit_changes", json!({ "sessionId": sid, "changes": doomed })).unwrap_err();
     assert!(refused.as_str().unwrap().contains("FOREIGN KEY"), "{refused}");
     doomed["cascade"] = json!(true);
     assert_eq!(call(&w, "commit_changes", json!({ "sessionId": sid, "changes": doomed })).unwrap(), 6);
     let left = call(&w, "run_query", json!({ "sessionId": sid, "statements": [
-        "SELECT (SELECT group_concat(name) FROM owners), (SELECT group_concat(id) FROM ravens), (SELECT group_concat(at) FROM sightings)"
+        "SELECT (SELECT group_concat(name) FROM owners), (SELECT group_concat(id) FROM ravens), (SELECT group_concat(at) FROM sightings), \
+         (SELECT group_concat(id || ':' || coalesce(raven, '-')) FROM nests)"
     ]}))
     .unwrap();
-    assert_eq!(left[0]["rows"], json!([["Loki", "3", "night"]]));
+    assert_eq!(left[0]["rows"], json!([["Loki", "3", "night", "1:-,2:3"]]));
 
     let err = call(&w, "run_query", json!({ "sessionId": sid, "statements": ["SELECT * FROM nope"] })).unwrap();
     assert!(err[0]["error"].as_str().unwrap().contains("no such table"));

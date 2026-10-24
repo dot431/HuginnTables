@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, RowReference } from "../lib/api";
+import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact } from "../lib/api";
 import * as S from "../lib/staging";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
@@ -52,7 +52,7 @@ export function TableTab(props: {
   const [selectedRow, setSelectedRow] = useState<number | undefined>();
   const [showDetail, setShowDetail] = useState(false);
   const [preview, setPreview] = useState<{ sql: string[]; cascade: boolean } | null>(null);
-  const [references, setReferences] = useState<RowReference[] | null>(null);
+  const [impact, setImpact] = useState<DeleteImpact | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [committing, setCommitting] = useState(false);
   const loadSeq = useRef(0);
@@ -123,13 +123,13 @@ export function TableTab(props: {
     try {
       const set = { ...changeSet(), cascade };
       if (!cascade && staging.deleted.size > 0 && HAS_FOREIGN_KEYS.includes(props.driver)) {
-        const refs = await api.deleteReferences(sessionId, set);
-        if (refs.length) {
-          setReferences(refs);
+        const found = await api.deleteReferences(sessionId, set);
+        if (found.references.length) {
+          setImpact(found);
           return;
         }
       }
-      setReferences(null);
+      setImpact(null);
       const affected = await api.commitChanges(sessionId, set);
       toast(`Committed — ${affected} row${affected === 1 ? "" : "s"} affected`, "success");
       setStaging(S.emptyStaging());
@@ -397,16 +397,16 @@ export function TableTab(props: {
           <pre className="sql-preview">{previewText(preview.sql)}</pre>
         </Modal>
       )}
-      {references && (
+      {impact && (
         <DeleteReferences
           table={table}
           deleting={staging.deleted.size}
-          references={references}
+          impact={impact}
           committing={committing}
-          onStop={() => (setReferences(null), setStaging(S.clearDeletes))}
-          onPreview={() => (setReferences(null), showPreview(true))}
+          onStop={() => (setImpact(null), setStaging(S.clearDeletes))}
+          onPreview={() => (setImpact(null), showPreview(true))}
           onCascade={() => commit(true)}
-          onClose={() => setReferences(null)}
+          onClose={() => setImpact(null)}
         />
       )}
     </div>
@@ -417,15 +417,18 @@ export function TableTab(props: {
 function DeleteReferences(props: {
   table: string;
   deleting: number;
-  references: RowReference[];
+  impact: DeleteImpact;
   committing: boolean;
   onStop: () => void;
   onPreview: () => void;
   onCascade: () => void;
   onClose: () => void;
 }) {
-  const total = props.references.reduce((n, r) => n + r.rows, 0);
+  const { references, cascadedRows } = props.impact;
+  const cleared = references.some((r) => r.onDelete.startsWith("SET "));
   const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+  const effect = (onDelete: string) =>
+    onDelete === "SET NULL" ? "cleared (NULL)" : onDelete === "SET DEFAULT" ? "reset to default" : "deleted";
   return (
     <Modal
       title={`${props.deleting === 1 ? "This row is" : "These rows are"} still referenced`}
@@ -437,14 +440,14 @@ function DeleteReferences(props: {
           <div className="spacer" />
           <button onClick={props.onStop}>Stop deleting</button>
           <button className="primary danger-fill" onClick={props.onCascade} disabled={props.committing}>
-            {props.committing ? "Deleting…" : `Delete all ${plural(props.deleting + total, "row")}`}
+            {props.committing ? "Deleting…" : `Delete all ${plural(props.deleting + cascadedRows, "row")}`}
           </button>
         </>
       }
     >
       <p style={{ marginTop: 0 }}>
-        Deleting {plural(props.deleting, "row")} from <b>{props.table}</b> affects {plural(total, "row")} in other
-        tables that point at {props.deleting === 1 ? "it" : "them"}:
+        Other tables point at the {plural(props.deleting, "row")} you're deleting from <b>{props.table}</b>.
+        {cascadedRows > 0 && <> Deleting {props.deleting === 1 ? "it" : "them"} also deletes {plural(cascadedRows, "row")} in those tables.</>}
       </p>
       <table className="plain">
         <thead>
@@ -452,11 +455,12 @@ function DeleteReferences(props: {
             <th>Table</th>
             <th>Points at</th>
             <th>On delete</th>
+            <th>Rows will be</th>
             <th style={{ textAlign: "right" }}>Rows</th>
           </tr>
         </thead>
         <tbody>
-          {props.references.map((r, i) => (
+          {references.map((r, i) => (
             <tr key={i}>
               <td style={{ paddingLeft: 10 + (r.depth - 1) * 18 }}>
                 {r.depth > 1 && <span className="faint">↳ </span>}
@@ -464,6 +468,7 @@ function DeleteReferences(props: {
               </td>
               <td className="mono muted">{r.columns.join(", ")} → {r.parentTable}</td>
               <td className="mono muted">{r.onDelete}</td>
+              <td className={r.onDelete.startsWith("SET ") ? "muted" : "error-text"}>{effect(r.onDelete)}</td>
               <td style={{ textAlign: "right" }}>{r.rows.toLocaleString()}</td>
             </tr>
           ))}
@@ -471,7 +476,8 @@ function DeleteReferences(props: {
       </table>
       <p className="muted" style={{ marginBottom: 0 }}>
         <b>Stop deleting</b> keeps every row and unmarks the deletion; your other changes stay staged.{" "}
-        <b>Delete all</b> removes the rows above too, deepest first, in one transaction.
+        <b>Delete all</b> deletes the rows marked “deleted”, deepest first, in one transaction
+        {cleared ? "; rows marked “cleared” stay, and the database empties their reference." : "."}
       </p>
     </Modal>
   );

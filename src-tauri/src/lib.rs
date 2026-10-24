@@ -180,7 +180,7 @@ async fn delete_references(
     state: State<'_, AppState>,
     session_id: String,
     changes: ChangeSet,
-) -> CmdResult<Vec<RowReference>> {
+) -> CmdResult<DeleteImpact> {
     state.session(&session_id).await?.delete_references(&changes).await.map_err(err)
 }
 

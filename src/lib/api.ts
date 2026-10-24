@@ -132,6 +132,14 @@ export interface RowReference {
   rows: number;
 }
 
+/** What deleting some rows would touch in other tables. */
+export interface DeleteImpact {
+  /** One entry per foreign key that matches rows, each right after the one it points at. */
+  references: RowReference[];
+  /** Distinct rows a cascading delete removes from other tables. */
+  cascadedRows: number;
+}
+
 export const api = {
   listConnections: () => invoke<ConnectionConfig[]>("list_connections"),
   saveConnection: (config: ConnectionConfig) => invoke<ConnectionConfig>("save_connection", { config }),
@@ -156,7 +164,7 @@ export const api = {
     invoke<QueryResult[]>("run_query", { sessionId, statements }),
   cancelQuery: (sessionId: string) => invoke<void>("cancel_query", { sessionId }),
   deleteReferences: (sessionId: string, changes: ChangeSet) =>
-    invoke<RowReference[]>("delete_references", { sessionId, changes }),
+    invoke<DeleteImpact>("delete_references", { sessionId, changes }),
   previewChanges: (sessionId: string, changes: ChangeSet) =>
     invoke<string[]>("preview_changes", { sessionId, changes }),
   commitChanges: (sessionId: string, changes: ChangeSet) =>

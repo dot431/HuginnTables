@@ -243,3 +243,15 @@ pub struct RowReference {
     pub depth: u32,
     pub rows: u64,
 }
+
+/// What deleting some rows would touch in other tables.
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteImpact {
+    /// One entry per foreign key that matches rows, each listed right after
+    /// the entry for the rows it points at.
+    pub references: Vec<RowReference>,
+    /// Distinct rows a cascading delete removes from other tables (entries
+    /// can overlap when a table is reached along several paths).
+    pub cascaded_rows: u64,
+}
