@@ -106,6 +106,11 @@ export interface FetchRequest {
   keyOrder: string[];
 }
 
+/** A `FetchRequest` without paging: which rows to export, in what order. */
+export type ExportRequest = Omit<FetchRequest, "limit" | "offset">;
+
+export type ExportFormat = "csv" | "json" | "sql";
+
 export interface CellValue {
   column: string;
   value: Cell;
@@ -228,6 +233,9 @@ export const api = {
     invoke<string>("table_ddl", { sessionId, schema, table }),
   schemaChangeSql: (sessionId: string, schema: string, table: string, change: SchemaChange) =>
     invoke<string[]>("schema_change_sql", { sessionId, schema, table, change }),
+  exportTable: (sessionId: string, request: ExportRequest, format: ExportFormat, path: string) =>
+    invoke<number>("export_table", { sessionId, request, format, path }),
+  writeTextFile: (path: string, contents: string) => invoke<void>("write_text_file", { path, contents }),
 };
 
 export const DEFAULT_PORTS: Record<DriverKind, number> = {
