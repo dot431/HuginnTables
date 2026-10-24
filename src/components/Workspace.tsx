@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, DriverKind, errorMessage, SessionInfo, TableInfo } from "../lib/api";
+import { api, DriverKind, errorMessage, FetchRequest, isSql, SessionInfo, TableInfo } from "../lib/api";
+import { loadWorkspace, reopenTabsEnabled, saveWorkspace, TableView } from "../lib/workspaceState";
+import { FilterState } from "./FilterBar";
 import { QueryTab } from "./QueryTab";
 import { TableTab } from "./TableTab";
 import { ContextMenu, DriverBadge, MenuState, toast, useDragSize } from "./ui";
 
 type Tab =
-  | { id: number; kind: "table"; schema: string; table: string; readOnly: boolean }
+  | { id: number; kind: "table"; schema: string; table: string; readOnly: boolean; filter?: FilterState; sort?: FetchRequest["sort"]; limit?: number }
   | { id: number; kind: "query"; title: string; initialSql?: string; slot: number };
 
 const KIND_ICON: Record<TableInfo["kind"], string> = {
@@ -51,6 +53,14 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
   const nextId = useRef(1);
   const sidebar = useDragSize(250, 180, 480, "x");
   const searchRef = useRef<HTMLInputElement>(null);
+  // What was open last time for this connection; the sidebar waits until it's reopened.
+  const [saved] = useState(() => (reopenTabsEnabled() ? loadWorkspace(props.session.connectionId) : null));
+  const [restoring, setRestoring] = useState(saved !== null);
+  const restoreStarted = useRef(false);
+  // Live filter/sort/page size of table tabs and editor text of query tabs, for saving.
+  const views = useRef<Record<number, TableView>>({});
+  const sqls = useRef<Record<number, string>>({});
+  const saveTimer = useRef<number>();
 
   const loadSchemas = useCallback(async () => {
     try {
@@ -81,8 +91,119 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
     }
   }, [sessionId, schema]);
 
-  useEffect(() => void loadSchemas(), [loadSchemas]);
-  useEffect(() => void loadTables(), [loadTables]);
+  useEffect(() => {
+    if (!restoring) void loadSchemas();
+  }, [loadSchemas, restoring]);
+  useEffect(() => {
+    if (!restoring) void loadTables();
+  }, [loadTables, restoring]);
+
+  // Reopen the database, schema and tabs from last time, skipping tables that are gone.
+  useEffect(() => {
+    if (!saved || restoreStarted.current) return;
+    restoreStarted.current = true;
+    (async () => {
+      let current = info;
+      let currentSchema = schema;
+      if (info.driver === "postgres" && saved.database && saved.database !== info.database) {
+        const dbs = await api.listDatabases(sessionId).catch(() => [] as string[]);
+        if (dbs.includes(saved.database)) {
+          try {
+            current = await api.switchDatabase(sessionId, saved.database);
+            currentSchema = current.schema;
+            setInfo(current);
+            setSchema(current.schema);
+          } catch (e) {
+            toast(errorMessage(e), "error");
+          }
+        }
+      }
+      // Table tabs only make sense in the database they were opened in.
+      const sameDb = current.driver !== "postgres" || current.database === saved.database;
+      if (sameDb && saved.schema && saved.schema !== currentSchema) {
+        const list = await api.listSchemas(sessionId).catch(() => [] as string[]);
+        if (list.includes(saved.schema)) {
+          await api.useSchema(sessionId, saved.schema).then(() => setSchema(saved.schema), () => undefined);
+        }
+      }
+      const catalog: Record<string, { tables: TableInfo[]; columns: Record<string, string[]> }> = {};
+      if (sameDb) {
+        const wanted = new Set(saved.tabs.flatMap((t) => (t.kind === "table" ? [t.schema] : [])));
+        await Promise.all(
+          [...wanted].map(async (s) => {
+            const [tables, columns] = await Promise.all([
+              api.listTables(sessionId, s).catch(() => [] as TableInfo[]),
+              isSql(current.driver) ? api.schemaColumns(sessionId, s).catch(() => ({})) : {},
+            ]);
+            catalog[s] = { tables, columns };
+          }),
+        );
+      }
+      const restored: Tab[] = [];
+      let active: number | null = null;
+      saved.tabs.forEach((t, i) => {
+        let tab: Tab;
+        if (t.kind === "query") {
+          tab = { id: nextId.current++, kind: "query", title: t.title, initialSql: t.sql, slot: t.slot };
+        } else {
+          const found = catalog[t.schema]?.tables.find((x) => x.name === t.table);
+          if (!found) return;
+          // Drop sorting and filter rules on columns that no longer exist (unknown columns are kept).
+          const cols = catalog[t.schema].columns[t.table];
+          const known = (c: string) => !cols || cols.includes(c);
+          tab = {
+            id: nextId.current++,
+            kind: "table",
+            schema: t.schema,
+            table: t.table,
+            readOnly: current.readOnly || !EDITABLE_KINDS.includes(found.kind),
+            filter: t.filter && { filters: t.filter.filters.filter((f) => known(f.column)), rawWhere: t.filter.rawWhere },
+            sort: t.sort && known(t.sort.column) ? t.sort : null,
+            limit: t.limit,
+          };
+        }
+        restored.push(tab);
+        // The saved active tab, else the closest one before it, else the first after it.
+        if (i <= saved.active || active === null) active = tab.id;
+      });
+      setTabs((ts) => [...restored, ...ts]);
+      setActiveTab((a) => a ?? active);
+      setRestoring(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Save what's open (debounced) so the next connect can reopen it. Row data and staged edits aren't kept.
+  const persist = useRef(() => {});
+  persist.current = () => {
+    if (restoring || !reopenTabsEnabled()) return;
+    saveWorkspace(info.connectionId, {
+      database: info.database,
+      schema,
+      tabs: tabs.map((t) =>
+        t.kind === "table"
+          ? { kind: "table", schema: t.schema, table: t.table, ...(views.current[t.id] ?? { filter: t.filter, sort: t.sort, limit: t.limit }) }
+          : { kind: "query", title: t.title, slot: t.slot, sql: sqls.current[t.id] ?? t.initialSql },
+      ),
+      active: tabs.findIndex((t) => t.id === activeTab),
+    });
+  };
+  const scheduleSave = useCallback(() => {
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => persist.current(), 500);
+  }, []);
+  useEffect(() => scheduleSave(), [tabs, activeTab, schema, info.database, restoring, scheduleSave]);
+  useEffect(() => {
+    const flush = () => {
+      window.clearTimeout(saveTimer.current);
+      persist.current();
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      flush();
+    };
+  }, []);
 
   const openTable = (t: TableInfo, newTab = false) => {
     const existing = tabs.find((x) => x.kind === "table" && x.schema === schema && x.table === t.name);
@@ -262,7 +383,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
           }}
         />
         <div className="table-list">
-          {tablesLoading && tables.length === 0 ? (
+          {(tablesLoading || restoring) && tables.length === 0 ? (
             <div className="row" style={{ padding: 10 }}>
               <div className="spinner" />
             </div>
@@ -277,7 +398,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                   </div>
                 ) : null;
               })}
-              {!tablesLoading && filtered.length === 0 && (
+              {!tablesLoading && !restoring && filtered.length === 0 && (
                 <div className="faint" style={{ padding: "10px 8px" }}>{search ? "No matches" : "No tables"}</div>
               )}
             </>
@@ -346,6 +467,13 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                 active={props.active && t.id === activeTab}
                 onPendingChange={(n) => setPending((p) => (p[t.id] === n ? p : { ...p, [t.id]: n }))}
                 onOpenQuery={openQuery}
+                initialFilter={t.filter}
+                initialSort={t.sort}
+                initialLimit={t.limit}
+                onViewChange={(v) => {
+                  views.current[t.id] = v;
+                  scheduleSave();
+                }}
               />
             ) : (
               <QueryTab
@@ -357,6 +485,10 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                 defaultSchema={schema}
                 active={props.active && t.id === activeTab}
                 onSchemaChanged={loadTables}
+                onSqlChange={(sql) => {
+                  sqls.current[t.id] = sql;
+                  scheduleSave();
+                }}
               />
             )}
           </div>

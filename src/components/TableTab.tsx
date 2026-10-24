@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact } from "../lib/api";
 import * as S from "../lib/staging";
+import type { TableView } from "../lib/workspaceState";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
 import { ContextMenu, MenuState, Modal, toast } from "./ui";
@@ -35,6 +36,12 @@ export function TableTab(props: {
   active: boolean;
   onPendingChange: (pending: number) => void;
   onOpenQuery: (sql: string) => void;
+  /** Applied on mount; a non-empty filter also opens the filter bar. */
+  initialFilter?: FilterState;
+  initialSort?: FetchRequest["sort"];
+  initialLimit?: number;
+  /** Reports filter, sort and page size whenever they change, so the tab can be reopened the same way. */
+  onViewChange?: (view: TableView) => void;
 }) {
   const { sessionId, schema, table } = props;
   const [view, setView] = useState<"data" | "structure">("data");
@@ -42,12 +49,12 @@ export function TableTab(props: {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [limit, setLimit] = useState(300);
+  const [limit, setLimit] = useState(props.initialLimit && PAGE_SIZES.includes(props.initialLimit) ? props.initialLimit : 300);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
-  const [sort, setSort] = useState<FetchRequest["sort"]>(null);
-  const [filter, setFilter] = useState<FilterState>({ filters: [], rawWhere: "" });
-  const [showFilters, setShowFilters] = useState(false);
+  const [sort, setSort] = useState<FetchRequest["sort"]>(props.initialSort ?? null);
+  const [filter, setFilter] = useState<FilterState>(props.initialFilter ?? { filters: [], rawWhere: "" });
+  const [showFilters, setShowFilters] = useState(!!(props.initialFilter?.filters.length || props.initialFilter?.rawWhere));
   const [staging, setStaging] = useState<S.Staging>(S.emptyStaging);
   const [selectedRow, setSelectedRow] = useState<number | undefined>();
   const [showDetail, setShowDetail] = useState(false);
@@ -66,6 +73,7 @@ export function TableTab(props: {
   const editable = !props.readOnly;
 
   useEffect(() => props.onPendingChange(pending), [pending]);
+  useEffect(() => props.onViewChange?.({ filter, sort, limit }), [filter, sort, limit]);
 
   const request = useCallback(
     (cols: ColumnInfo[]): FetchRequest => ({
