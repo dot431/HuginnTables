@@ -2,12 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorView } from "@codemirror/view";
 import { api, DriverKind, errorMessage, QueryResult } from "../lib/api";
 import { SplitMode, splitStatements, statementAt } from "../lib/sqlSplit";
+import { recordRun } from "../lib/history";
 import { DataGrid } from "./DataGrid";
+import { HistoryPanel, useHistoryPanel } from "./HistoryPanel";
 import { SqlEditor, SqlEditorHandle } from "./SqlEditor";
 import { ContextMenu, MenuState, useDragSize } from "./ui";
 
 export function QueryTab(props: {
   sessionId: string;
+  /** Saved connection id; history and saved queries are kept per connection. */
+  connectionId: string;
   driver: DriverKind;
   storageKey: string;
   initialSql?: string;
@@ -24,6 +28,7 @@ export function QueryTab(props: {
   const editor = useRef<SqlEditorHandle>({ view: null });
   const split = useDragSize(260, 80, 2000, "y");
   const saveTimer = useRef<number>();
+  const side = useHistoryPanel(props.active);
 
   const initial = useRef(
     props.initialSql ?? (() => {
@@ -55,6 +60,7 @@ export function QueryTab(props: {
       try {
         const out = await api.runQuery(props.sessionId, statements);
         setResults(out);
+        recordRun(props.connectionId, props.driver, statements, out, performance.now() - started);
         // Show the first failure, otherwise the last result that has rows.
         const failed = out.findIndex((r) => r.error);
         const lastRows = out.map((r) => r.hasRows).lastIndexOf(true);
@@ -66,6 +72,7 @@ export function QueryTab(props: {
       } catch (e) {
         setResults([{ sql: statements.join(";\n"), columns: [], rows: [], hasRows: false, rowsAffected: 0, durationMs: 0, truncated: false, error: errorMessage(e) }]);
         setCurrent(0);
+        recordRun(props.connectionId, props.driver, statements, [], performance.now() - started, errorMessage(e));
       } finally {
         window.clearInterval(tick);
         setRunning(false);
@@ -112,7 +119,7 @@ export function QueryTab(props: {
   const result = results[current];
 
   return (
-    <div className="tab-content">
+    <div className={`tab-content ${side.open ? "with-side" : ""}`} style={side.open ? { paddingRight: side.size } : undefined}>
       <div className="toolbar">
         <button
           className="primary"
@@ -136,6 +143,9 @@ export function QueryTab(props: {
         )}
         <div className="spacer" />
         <span className="faint">{props.driver === "redis" ? "⌘↵ run line · ⇧⌘↵ run all" : "⌘↵ run · ⇧⌘↵ run all · ⌘. stop"}</span>
+        <button className={side.open ? "primary" : ""} onClick={side.toggle} title="Query history and saved queries (⌘Y)">
+          History
+        </button>
       </div>
       <div className="editor-host" style={{ height: results.length ? split.size : undefined, flex: results.length ? undefined : 1 }}>
         <SqlEditor
@@ -221,6 +231,17 @@ export function QueryTab(props: {
               ))}
           </div>
         </>
+      )}
+      {side.open && (
+        <HistoryPanel
+          connectionId={props.connectionId}
+          editor={editor}
+          width={side.size}
+          dragging={side.dragging}
+          onResize={side.onMouseDown}
+          onRunAll={() => editor.current.view && run(editor.current.view, true)}
+          onClose={side.close}
+        />
       )}
       <ContextMenu menu={menu} onClose={() => setMenu(null)} />
     </div>
