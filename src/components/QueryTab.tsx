@@ -21,6 +21,8 @@ export function QueryTab(props: {
   production?: boolean;
   active: boolean;
   onSchemaChanged: () => void;
+  /** The editor text, debounced like the local save. */
+  onSqlChange?: (sql: string) => void;
 }) {
   const [results, setResults] = useState<QueryResult[]>([]);
   const [current, setCurrent] = useState(0);
@@ -51,6 +53,7 @@ export function QueryTab(props: {
       } catch {
         /* storage unavailable */
       }
+      props.onSqlChange?.(text);
     }, 400);
   };
 

@@ -3,6 +3,7 @@ import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, Q
 import { pastedRows } from "../lib/formats";
 import * as S from "../lib/staging";
 import { copyMenuItems, ExportDialog, PasteDialog } from "./CopyExport";
+import type { TableView } from "../lib/workspaceState";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
 import { keyFilter, openParentLabel, ReferencedBy } from "./ForeignKeyNav";
@@ -42,8 +43,12 @@ export function TableTab(props: {
   active: boolean;
   onPendingChange: (pending: number) => void;
   onOpenQuery: (sql: string) => void;
-  /** Rows to show first; the filter bar opens when it has rules. */
+  /** Applied on mount; a non-empty filter also opens the filter bar. */
   initialFilter?: FilterState;
+  initialSort?: FetchRequest["sort"];
+  initialLimit?: number;
+  /** Reports filter, sort and page size whenever they change, so the tab can be reopened the same way. */
+  onViewChange?: (view: TableView) => void;
   /** Opens a table in a new tab, showing only the rows `filter` selects. */
   onOpenTable?: (schema: string, table: string, filter: FilterState) => void;
 }) {
@@ -53,10 +58,10 @@ export function TableTab(props: {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [limit, setLimit] = useState(300);
+  const [limit, setLimit] = useState(props.initialLimit && PAGE_SIZES.includes(props.initialLimit) ? props.initialLimit : 300);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
-  const [sort, setSort] = useState<FetchRequest["sort"]>(null);
+  const [sort, setSort] = useState<FetchRequest["sort"]>(props.initialSort ?? null);
   const [filter, setFilter] = useState<FilterState>(props.initialFilter ?? { filters: [], rawWhere: "" });
   const [showFilters, setShowFilters] = useState(!!(props.initialFilter?.filters.length || props.initialFilter?.rawWhere));
   const [staging, setStaging] = useState<S.Staging>(S.emptyStaging);
@@ -84,6 +89,7 @@ export function TableTab(props: {
   const fkColumns = useMemo(() => new Set(foreignKeys.outgoing.flatMap((fk) => fk.columns)), [foreignKeys]);
 
   useEffect(() => props.onPendingChange(pending), [pending]);
+  useEffect(() => props.onViewChange?.({ filter, sort, limit }), [filter, sort, limit]);
 
   const request = useCallback(
     (cols: ColumnInfo[]): FetchRequest => ({

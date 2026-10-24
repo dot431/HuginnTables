@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { setTheme, ThemeId, THEMES, useTheme } from "../lib/theme";
+import { reopenTabsEnabled, setReopenTabs } from "../lib/workspaceState";
 import { Modal } from "./ui";
 
 // Miniature of each theme: chrome, content, accent, highlight. Classic shows its light and dark halves.
@@ -13,6 +15,7 @@ const PREVIEW: Record<ThemeId, { chrome: string; content: string; line: string; 
 
 export function SettingsModal(props: { onClose: () => void }) {
   const { theme } = useTheme();
+  const [reopen, setReopen] = useState(reopenTabsEnabled);
   return (
     <Modal
       title="Settings"
@@ -56,6 +59,22 @@ export function SettingsModal(props: { onClose: () => void }) {
             </div>
           </button>
         ))}
+      </div>
+      <div className="form-section">Workspace</div>
+      <div className="row">
+        <input
+          type="checkbox"
+          id="reopen-tabs"
+          checked={reopen}
+          onChange={(e) => {
+            setReopen(e.target.checked);
+            setReopenTabs(e.target.checked);
+          }}
+        />
+        <label htmlFor="reopen-tabs">Reopen tabs when connecting</label>
+      </div>
+      <div className="faint" style={{ marginTop: 4 }}>
+        Brings back the database, schema, open tabs with their filters and sorting, and query text from the last time.
       </div>
     </Modal>
   );
