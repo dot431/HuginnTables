@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      # One binary for both Apple Silicon and Intel Macs.
+      # llvm-tools: `strip = true` in the release profile needs it on recent toolchains.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: llvm-tools
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      # Ad-hoc signed (bundle.macOS.signingIdentity = "-"), not notarized.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target universal-apple-darwin --bundles app,dmg
+          tagName: build-${{ github.run_number }}
+          releaseName: HuginnTables v__VERSION__ (build ${{ github.run_number }})
+          releaseCommitish: ${{ github.sha }}
+          releaseDraft: false
+          prerelease: false
+          releaseBody: |
+            Built from ${{ github.sha }}.
+
+            **Install:** open the `.dmg` and drag HuginnTables into Applications.
+
+            **First launch:** the app isn't notarized by Apple, so macOS blocks it the first time with "Apple could not verify…". To allow it:
+            1. Try to open HuginnTables once, then click **Done**.
+            2. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the HuginnTables message, then confirm.
+
+            Or, in Terminal:
+            ```
+            xattr -dr com.apple.quarantine /Applications/HuginnTables.app
+            ```
