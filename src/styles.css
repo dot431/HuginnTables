@@ -384,6 +384,38 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .dp-field textarea { width: 100%; resize: vertical; min-height: 30px; font-family: var(--mono); font-size: 12px; }
 .dp-field.edited textarea { background: var(--edited); }
 .dp-field .null-tag { font-size: 10px; color: var(--text-faint); }
+.dp-field .dp-tags { display: flex; gap: 8px; }
+
+.json-tree {
+  font-family: var(--mono); font-size: 12px; line-height: 18px;
+  background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 4px 6px; max-height: 320px; overflow: auto;
+  user-select: text; -webkit-user-select: text;
+}
+.json-tree .jt-row { white-space: nowrap; }
+.json-tree .jt-toggle { cursor: pointer; }
+.json-tree .jt-toggle:hover { background: var(--bg-hover); }
+.json-tree .jt-caret { display: inline-block; width: 12px; color: var(--text-faint); }
+.json-tree .jt-key { color: var(--text-muted); }
+.json-tree .jt-str { color: var(--success); white-space: pre; }
+.json-tree .jt-num { color: var(--warning); }
+.json-tree .jt-null { color: var(--text-faint); font-style: italic; }
+
+.popover-anchor { position: relative; }
+.popover {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+.popover .sep { height: 1px; background: var(--border); margin: 8px -8px; }
+.columns-popover { min-width: 220px; }
+.columns-popover .pop-list { max-height: 320px; overflow: auto; display: flex; flex-direction: column; }
+.check-row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 5px; white-space: nowrap; }
+.check-row:hover { background: var(--bg-hover); }
+.selection-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 .structure { flex: 1; overflow: auto; }
 table.plain { border-collapse: collapse; width: 100%; }

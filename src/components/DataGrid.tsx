@@ -176,19 +176,34 @@ export function DataGrid(props: {
   selectionKey?: number;
   /** Scrolls this row into view whenever the object changes. */
   reveal?: { row: number };
+  /**
+   * Names of columns left out of the grid. Column indexes in every callback
+   * and in `getValue` still refer to the full `columns` list.
+   */
+  hiddenColumns?: readonly string[];
+  /** Keeps this many of the visible columns pinned on the left. */
+  freezeColumns?: number;
+  /** Widths to start from whenever `layoutKey` changes, by column name. */
+  initialWidths?: Record<string, number>;
+  /** Called once a column resize ends. */
+  onColumnWidth?: (column: string, width: number) => void;
+  onHeaderContextMenu?: (col: number, x: number, y: number) => void;
+  /** The selected cells as [col, row] pairs, whenever the selection changes. */
+  onSelectCells?: (cells: [number, number][]) => void;
 }) {
   const ref = useRef<DataEditorRef>(null);
   const appearance = useTheme();
   const { theme, stateBg } = gridTheme(appearance.theme, appearance.dark);
-  const [widths, setWidths] = useState<Record<string, number>>({});
+  const [widths, setWidths] = useState<Record<string, number>>(props.initialWidths ?? {});
   const [selection, setSelection] = useState<GridSelection>({
     columns: CompactSelection.empty(),
     rows: CompactSelection.empty(),
   });
 
   useEffect(() => {
-    setWidths({});
+    setWidths(props.initialWidths ?? {});
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.layoutKey]);
 
   useEffect(() => {
@@ -213,10 +228,27 @@ export function DataGrid(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.reveal]);
 
+  // Full column indexes of the columns on screen; grid indexes map through this.
+  const names = props.columns.map((c) => c.name).join("\0");
+  const hiddenKey = (props.hiddenColumns ?? []).join("\0");
+  const visible = useMemo(() => {
+    const hidden = new Set(props.hiddenColumns ?? []);
+    const shown = props.columns.flatMap((c, i) => (hidden.has(c.name) ? [] : [i]));
+    return shown.length ? shown : props.columns.map((_, i) => i);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [names, hiddenKey]);
+  const toFull = (col: number) => visible[col] ?? col;
+
+  // Grid indexes shift when columns are hidden or shown, so start over.
+  useEffect(() => {
+    setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+  }, [hiddenKey]);
+
   const { getValue, rowCount } = props;
   const gridColumns: GridColumn[] = useMemo(
     () =>
-      props.columns.map((c, i) => {
+      visible.map((i) => {
+        const c = props.columns[i];
         const sortMark = props.sort?.column === c.name ? (props.sort.desc ? " ↓" : " ↑") : "";
         const title = `${c.badge ? c.badge + " " : ""}${c.name}${sortMark}`;
         const sample: (Cell | undefined)[] = [];
@@ -225,12 +257,12 @@ export function DataGrid(props: {
       }),
     // Widths are sampled once per layout; re-sampling on every edit would make columns jump.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [props.columns, props.sort, widths, props.layoutKey, rowCount > 0],
+    [props.columns, visible, props.sort, widths, props.layoutKey, rowCount > 0],
   );
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
-      const { value, state } = getValue(col, row);
+      const { value, state } = getValue(visible[col] ?? col, row);
       const isPlaceholder = value === null || value === undefined;
       const bg = state ? stateBg[state] : undefined;
       return {
@@ -248,7 +280,7 @@ export function DataGrid(props: {
             : undefined,
       };
     },
-    [getValue, props.editable, stateBg, theme.textLight],
+    [getValue, visible, props.editable, stateBg, theme.textLight],
   );
 
   const selectedRows = (sel: GridSelection): number[] => {
@@ -265,12 +297,36 @@ export function DataGrid(props: {
       props.onEdit?.(
         cells
           .filter((c) => c.value.kind === GridCellKind.Text)
-          .map((c) => ({ col: c.location[0], row: c.location[1], value: (c.value as { data: string }).data })),
+          .map((c) => ({ col: visible[c.location[0]] ?? c.location[0], row: c.location[1], value: (c.value as { data: string }).data })),
       );
       return true;
     },
-    [props.onEdit],
+    [props.onEdit, visible],
   );
+
+  /** Every selected cell in full column indexes; whole rows count their visible cells. */
+  const selectedCells = (sel: GridSelection): [number, number][] => {
+    const MAX = 200_000;
+    const seen = new Set<number>();
+    const cells: [number, number][] = [];
+    const add = (col: number, row: number) => {
+      const key = row * visible.length + col;
+      if (cells.length >= MAX || seen.has(key) || col >= visible.length || row >= rowCount) return;
+      seen.add(key);
+      cells.push([visible[col], row]);
+    };
+    for (const r of sel.current ? [sel.current.range, ...sel.current.rangeStack] : []) {
+      for (let y = r.y; y < r.y + r.height; y++) for (let x = r.x; x < r.x + r.width; x++) add(x, y);
+    }
+    for (const y of sel.rows) for (let x = 0; x < visible.length; x++) add(x, y);
+    for (const x of sel.columns) for (let y = 0; y < rowCount; y++) add(x, y);
+    return cells;
+  };
+
+  useEffect(() => {
+    if (props.onSelectCells) props.onSelectCells(selectedCells(selection));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection, visible, rowCount]);
 
   return (
     <DataEditor
@@ -299,10 +355,17 @@ export function DataGrid(props: {
         if (props.editable) props.onDeleteRows?.(selectedRows(sel));
         return false;
       }}
+      freezeColumns={Math.max(0, Math.min(props.freezeColumns ?? 0, visible.length - 1))}
       onColumnResize={(col, width) => setWidths((w) => ({ ...w, [col.id as string]: width }))}
-      onHeaderClicked={(col) => props.onHeaderClick?.(col)}
+      onColumnResizeEnd={(col, width) => props.onColumnWidth?.(col.id as string, width)}
+      onHeaderClicked={(col) => props.onHeaderClick?.(toFull(col))}
+      onHeaderContextMenu={(col, e) => {
+        if (!props.onHeaderContextMenu) return;
+        e.preventDefault();
+        props.onHeaderContextMenu(toFull(col), e.bounds.x + e.localEventX, e.bounds.y + e.localEventY);
+      }}
       onCellClicked={([col, row], e) => {
-        if (IS_MAC ? e.metaKey : e.ctrlKey) props.onCellMetaClick?.(col, row);
+        if (IS_MAC ? e.metaKey : e.ctrlKey) props.onCellMetaClick?.(toFull(col), row);
       }}
       onCellContextMenu={([col, row], e) => {
         e.preventDefault();
@@ -320,7 +383,7 @@ export function DataGrid(props: {
           });
           props.onSelectRow?.(row);
         }
-        props.onContextMenu?.(col, row, e.bounds.x + e.localEventX, e.bounds.y + e.localEventY, rows);
+        props.onContextMenu?.(toFull(col), row, e.bounds.x + e.localEventX, e.bounds.y + e.localEventY, rows);
       }}
     />
   );

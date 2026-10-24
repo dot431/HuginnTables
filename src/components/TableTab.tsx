@@ -2,11 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact, ForeignKeyInfo, TableForeignKeys } from "../lib/api";
 import { pastedRows } from "../lib/formats";
 import * as S from "../lib/staging";
-import { copyMenuItems, ExportDialog, PasteDialog } from "./CopyExport";
 import type { TableView } from "../lib/workspaceState";
+import { useColumnLayout } from "../lib/columnLayout";
+import { useStagingHistory } from "../lib/stagingHistory";
+import { copyMenuItems, ExportDialog, PasteDialog } from "./CopyExport";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
 import { keyFilter, openParentLabel, ReferencedBy } from "./ForeignKeyNav";
+import { BulkSetDialog, ColumnsButton, summarize } from "./GridTools";
+import { JsonTree, parseJsonContainer } from "./JsonTree";
 import { ConfirmStatements } from "./Safety";
 import { StructureView } from "./StructureView";
 import { ContextMenu, MenuState, Modal, toast } from "./ui";
@@ -34,6 +38,8 @@ function openQueryText(driver: DriverKind, schema: string, table: string, result
 
 export function TableTab(props: {
   sessionId: string;
+  /** Keys the remembered column layout; falls back to the session. */
+  connectionId?: string;
   driver: DriverKind;
   schema: string;
   table: string;
@@ -64,7 +70,7 @@ export function TableTab(props: {
   const [sort, setSort] = useState<FetchRequest["sort"]>(props.initialSort ?? null);
   const [filter, setFilter] = useState<FilterState>(props.initialFilter ?? { filters: [], rawWhere: "" });
   const [showFilters, setShowFilters] = useState(!!(props.initialFilter?.filters.length || props.initialFilter?.rawWhere));
-  const [staging, setStaging] = useState<S.Staging>(S.emptyStaging);
+  const { staging, setStaging, undo, redo } = useStagingHistory();
   const [selectedRow, setSelectedRow] = useState<number | undefined>();
   const [showDetail, setShowDetail] = useState(false);
   const [preview, setPreview] = useState<{ sql: string[]; cascade: boolean } | null>(null);
@@ -79,6 +85,9 @@ export function TableTab(props: {
   const [referencedBy, setReferencedBy] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [pasteBox, setPasteBox] = useState(false);
+  const [layout, updateLayout] = useColumnLayout(`${props.connectionId ?? sessionId}.${schema}.${table}`);
+  const [selectedCells, setSelectedCells] = useState<[number, number][]>([]);
+  const [bulkSet, setBulkSet] = useState<{ col: number; rows: number[] } | null>(null);
 
   const rows = result?.rows ?? [];
   const columns = useMemo(() => result?.columns.map((c) => c.name) ?? structure.map((c) => c.name), [result, structure]);
@@ -225,6 +234,20 @@ export function TableTab(props: {
     [staging, rows],
   );
 
+  const selectionSummary = useMemo(
+    () => summarize(selectedCells.map(([c, r]) => S.cellAt(staging, rows, c, r).value)),
+    [selectedCells, staging, rows],
+  );
+
+  const duplicate = (targets: number[]) => {
+    const skip = primaryKey.map((k) => columns.indexOf(k)).filter((i) => i >= 0);
+    setReveal({ row: rows.length + staging.inserted.length });
+    setStaging((s) => S.duplicateRows(s, rows, columns.length, targets, skip));
+  };
+
+  const setHidden = (hidden: string[]) => updateLayout((l) => ({ ...l, hidden }));
+  const setFrozen = (frozen: number) => updateLayout((l) => ({ ...l, frozen }));
+
   // Keyboard shortcuts while this tab is visible.
   useEffect(() => {
     if (!props.active) return;
@@ -252,6 +275,11 @@ export function TableTab(props: {
         if (el?.closest("input, textarea, [contenteditable=true]")) return;
         e.preventDefault();
         pasteFromClipboard();
+      } else if (k === "z" && editable && view === "data" && !isTextField(e.target)) {
+        // Text fields and the cell editor keep their own undo.
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -300,6 +328,9 @@ export function TableTab(props: {
         { separator: true, label: "" },
         { label: "Set NULL", disabled: !editable, action: () => edit(col, row, null) },
         { label: "Set empty string", disabled: !editable, action: () => edit(col, row, "") },
+        ...(selected.length > 1
+          ? [{ label: `Set ${colName} for ${selected.length} rows…`, disabled: !editable, action: () => setBulkSet({ col, rows: selected }) }]
+          : []),
         {
           label: `Filter where ${colName} = this`,
           action: () => {
@@ -332,8 +363,25 @@ export function TableTab(props: {
           : []),
         { separator: true, label: "" },
         { label: `Delete row${many}`, shortcut: "⌫", disabled: !editable, action: () => setStaging((s) => S.toggleDelete(s, rows.length, selected)) },
+        { label: `Duplicate row${many}`, disabled: !editable, action: () => duplicate(selected) },
         { label: `Revert changes${many}`, disabled: !pending, action: () => setStaging((s) => S.revertRows(s, rows.length, selected)) },
         { label: "Open row detail", action: () => (setSelectedRow(row), setShowDetail(true)) },
+      ],
+    });
+  };
+
+  const onHeaderContextMenu = (col: number, x: number, y: number) => {
+    const name = columns[col];
+    const visible = columns.filter((c) => !layout.hidden.includes(c));
+    setMenu({
+      x,
+      y,
+      items: [
+        { label: `Hide ${name}`, disabled: visible.length <= 1, action: () => setHidden([...layout.hidden, name]) },
+        { label: "Show all columns", disabled: visible.length === columns.length, action: () => setHidden([]) },
+        { separator: true, label: "" },
+        { label: `Freeze through ${name}`, action: () => setFrozen(visible.indexOf(name) + 1) },
+        { label: "Unfreeze columns", disabled: !layout.frozen, action: () => setFrozen(0) },
       ],
     });
   };
@@ -364,6 +412,9 @@ export function TableTab(props: {
         <button onClick={() => setExporting(true)} disabled={!columns.length} title="Export rows to a file">
           Export…
         </button>
+        {view === "data" && columns.length > 0 && (
+          <ColumnsButton columns={columns} hidden={layout.hidden} frozen={layout.frozen} onHidden={setHidden} onFrozen={setFrozen} />
+        )}
         <div className="spacer" />
         {props.readOnly && <span className="faint">Read-only</span>}
         {editable && !primaryKey.length && structure.length > 0 && props.driver !== "mongodb" && (
@@ -440,6 +491,12 @@ export function TableTab(props: {
                 onContextMenu={onContextMenu}
                 onSelectRow={setSelectedRow}
                 onCellMetaClick={navigable ? onMetaClick : undefined}
+                hiddenColumns={layout.hidden}
+                freezeColumns={layout.frozen}
+                initialWidths={layout.widths}
+                onColumnWidth={(name, width) => updateLayout((l) => ({ ...l, widths: { ...l.widths, [name]: width } }))}
+                onHeaderContextMenu={onHeaderContextMenu}
+                onSelectCells={setSelectedCells}
               />
             )}
             {loading && (
@@ -478,6 +535,7 @@ export function TableTab(props: {
           </span>
         )}
         <div className="spacer" />
+        {selectionSummary && <span className="muted selection-summary">{selectionSummary}</span>}
         <span className="muted">
           {from}–{to} of {total === null ? "…" : total.toLocaleString()}
         </span>
@@ -523,6 +581,17 @@ export function TableTab(props: {
         />
       )}
       {pasteBox && <PasteDialog onPaste={pasteRows} onClose={() => setPasteBox(false)} />}
+      {bulkSet && (
+        <BulkSetDialog
+          column={columns[bulkSet.col]}
+          rows={bulkSet.rows.length}
+          onApply={(value) => {
+            setStaging((s) => S.setColumn(s, rows, bulkSet.col, bulkSet.rows, value));
+            setBulkSet(null);
+          }}
+          onClose={() => setBulkSet(null)}
+        />
+      )}
       {preview && (
         <Modal
           title="Pending changes"
@@ -663,6 +732,12 @@ function DeleteReferences(props: {
   );
 }
 
+/** Inputs keep ⌘Z for their own text. */
+function isTextField(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+}
+
 function RowDetail(props: {
   columns: ColumnInfo[];
   row: number | undefined;
@@ -671,6 +746,14 @@ function RowDetail(props: {
   onEdit: (col: number, value: Cell) => void;
   onClose: () => void;
 }) {
+  // Columns showing their JSON as a tree instead of text.
+  const [trees, setTrees] = useState<ReadonlySet<string>>(new Set());
+  const toggleTree = (name: string) =>
+    setTrees((t) => {
+      const next = new Set(t);
+      if (!next.delete(name)) next.add(name);
+      return next;
+    });
   return (
     <div className="detail-panel">
       <div className="dp-head">
@@ -683,6 +766,8 @@ function RowDetail(props: {
           {props.columns.map((c, i) => {
             const { value, state } = props.getValue(i);
             const readOnly = !props.editable || state === "deleted";
+            const json = parseJsonContainer(value);
+            const asTree = json !== undefined && trees.has(c.name);
             return (
               <div key={c.name} className={`dp-field ${state === "edited" ? "edited" : ""}`}>
                 <label>
@@ -690,19 +775,30 @@ function RowDetail(props: {
                     {c.isPrimaryKey && "🔑 "}
                     <b style={{ color: "var(--text)", fontWeight: 600 }}>{c.name}</b> {c.dataType}
                   </span>
-                  {!readOnly && c.nullable && value !== null && (
-                    <span className="null-tag" style={{ cursor: "pointer" }} onClick={() => props.onEdit(i, null)}>
-                      set NULL
-                    </span>
-                  )}
+                  <span className="dp-tags">
+                    {json !== undefined && (
+                      <span className="null-tag" style={{ cursor: "pointer" }} onClick={() => toggleTree(c.name)}>
+                        {asTree ? "text" : "tree"}
+                      </span>
+                    )}
+                    {!readOnly && c.nullable && value !== null && (
+                      <span className="null-tag" style={{ cursor: "pointer" }} onClick={() => props.onEdit(i, null)}>
+                        set NULL
+                      </span>
+                    )}
+                  </span>
                 </label>
-                <textarea
-                  rows={Math.min(6, Math.max(1, (value ?? "").split("\n").length))}
-                  readOnly={readOnly}
-                  value={value ?? ""}
-                  placeholder={value === null ? "NULL" : value === undefined ? "DEFAULT" : ""}
-                  onChange={(e) => props.onEdit(i, e.target.value)}
-                />
+                {asTree ? (
+                  <JsonTree value={json} />
+                ) : (
+                  <textarea
+                    rows={Math.min(6, Math.max(1, (value ?? "").split("\n").length))}
+                    readOnly={readOnly}
+                    value={value ?? ""}
+                    placeholder={value === null ? "NULL" : value === undefined ? "DEFAULT" : ""}
+                    onChange={(e) => props.onEdit(i, e.target.value)}
+                  />
+                )}
               </div>
             );
           })}

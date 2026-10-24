@@ -506,6 +506,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
             {t.kind === "table" ? (
               <TableTab
                 sessionId={sessionId}
+                connectionId={info.connectionId}
                 driver={info.driver}
                 schema={t.schema}
                 table={t.table}
