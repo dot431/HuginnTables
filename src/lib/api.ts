@@ -167,6 +167,28 @@ export interface TableForeignKeys {
   incoming: ForeignKeyInfo[];
 }
 
+/** An index on a table, as the Structure tab lists it. */
+export interface IndexInfo {
+  name: string;
+  /** Key columns in index order; expressions where the engine reports them. */
+  columns: string[];
+  unique: boolean;
+  primary: boolean;
+  /** Backs a PRIMARY KEY/UNIQUE constraint and goes away with it. */
+  constraint: boolean;
+  /** Access method or index type (btree, gin, fulltext…), where known. */
+  method: string | null;
+  /** The statement that creates the index, where the engine keeps one. */
+  definition: string | null;
+}
+
+/** A schema change from the Structure tab; the backend turns it into SQL. */
+export type SchemaChange =
+  /** `dataType` and `default` are SQL as typed: `varchar(40)`, `now()`, `'x'`. */
+  | { kind: "addColumn"; name: string; dataType: string; nullable: boolean; default: string | null }
+  | { kind: "addIndex"; name: string; columns: string[]; unique: boolean }
+  | { kind: "dropIndex"; name: string; constraint: boolean };
+
 export const api = {
   listConnections: () => invoke<ConnectionConfig[]>("list_connections"),
   saveConnection: (config: ConnectionConfig) => invoke<ConnectionConfig>("save_connection", { config }),
@@ -198,6 +220,12 @@ export const api = {
     invoke<number>("commit_changes", { sessionId, changes }),
   tableForeignKeys: (sessionId: string, schema: string, table: string) =>
     invoke<TableForeignKeys>("table_foreign_keys", { sessionId, schema, table }),
+  tableIndexes: (sessionId: string, schema: string, table: string) =>
+    invoke<IndexInfo[]>("table_indexes", { sessionId, schema, table }),
+  tableDdl: (sessionId: string, schema: string, table: string) =>
+    invoke<string>("table_ddl", { sessionId, schema, table }),
+  schemaChangeSql: (sessionId: string, schema: string, table: string, change: SchemaChange) =>
+    invoke<string[]>("schema_change_sql", { sessionId, schema, table, change }),
 };
 
 export const DEFAULT_PORTS: Record<DriverKind, number> = {

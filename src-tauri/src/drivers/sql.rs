@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
 use super::{statement_context, Browser, Driver, Engine};
-use crate::dialect::{CascadeStep, Dialect, ForeignKey, SqlEngine};
+use crate::dialect::{group_indexes, CascadeStep, Dialect, ForeignKey, SqlEngine};
 use crate::model::*;
 
 /// A cascading delete gives up beyond this many levels of referencing rows…
@@ -281,5 +281,46 @@ impl Browser for SqlBrowser {
     async fn commit_changes(&self, set: &ChangeSet) -> Result<u64> {
         let statements = self.statements(set).await?;
         self.driver.execute_in_transaction(&statements).await
+    }
+
+    async fn table_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>> {
+        Ok(group_indexes(rows_of(self.query(&self.dialect.indexes_sql(schema, table)).await?)))
+    }
+
+    async fn table_ddl(&self, schema: &str, table: &str) -> Result<String> {
+        let sql = self.dialect.ddl_sql(schema, table);
+        match self.dialect.0 {
+            SqlEngine::Mysql => {
+                let row = rows_of(self.query(&sql).await?).into_iter().next();
+                let ddl = row.and_then(|r| r.into_iter().nth(1).flatten());
+                Ok(format!("{};", ddl.context("the server returned no CREATE statement")?))
+            }
+            SqlEngine::Sqlite => {
+                let parts = first_column(self.query(&sql).await?);
+                if parts.is_empty() {
+                    bail!("no CREATE statement is stored for {table}");
+                }
+                let parts: Vec<_> = parts.iter().map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).collect();
+                Ok(parts.join("\n\n"))
+            }
+            // Assembled from the catalog: views need only their definition.
+            SqlEngine::Postgres => {
+                let head = rows_of(self.query(&sql).await?).into_iter().next().unwrap_or_default();
+                let kind = head.first().cloned().flatten().unwrap_or_default();
+                let (mut columns, mut constraints, mut indexes) = (Vec::new(), Vec::new(), Vec::new());
+                if kind != "v" && kind != "m" {
+                    columns = rows_of(self.query(&self.dialect.pg_ddl_columns_sql(schema, table)).await?);
+                    constraints = rows_of(self.query(&self.dialect.pg_ddl_constraints_sql(schema, table)).await?);
+                }
+                if kind != "v" {
+                    indexes = self.table_indexes(schema, table).await?;
+                }
+                Ok(self.dialect.pg_ddl(schema, table, &head, &columns, &constraints, &indexes))
+            }
+        }
+    }
+
+    async fn schema_change_sql(&self, schema: &str, table: &str, change: &SchemaChange) -> Result<Vec<String>> {
+        self.dialect.schema_change_sql(schema, table, change)
     }
 }
