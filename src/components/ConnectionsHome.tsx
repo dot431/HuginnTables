@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   ConnectionConfig,
@@ -29,6 +30,7 @@ export function ConnectionsHome(props: {
     setEditing(c);
   };
   const [importing, setImporting] = useState(false);
+  const [importingEnv, setImportingEnv] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
 
   const reload = () =>
@@ -52,7 +54,7 @@ export function ConnectionsHome(props: {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (editing || importing) return;
+      if (editing || importing || importingEnv) return;
       if (e.metaKey && e.key === "n") {
         e.preventDefault();
         startNew();
@@ -68,7 +70,7 @@ export function ConnectionsHome(props: {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, selected, editing, importing, props]);
+  }, [visible, selected, editing, importing, importingEnv, props]);
 
   return (
     <div className="home">
@@ -90,6 +92,9 @@ export function ConnectionsHome(props: {
         <div className="home-toolbar">
           <input placeholder="Search connections" value={search} onChange={(e) => setSearch(e.target.value)} />
           <button onClick={() => setImporting(true)}>Import URL…</button>
+          <button onClick={() => setImportingEnv(true)} title="Read DB_* settings from a Laravel project">
+            Import from .env…
+          </button>
           <button className="primary" onClick={startNew}>
             New Connection
           </button>
@@ -176,6 +181,15 @@ export function ConnectionsHome(props: {
           }}
         />
       )}
+      {importingEnv && (
+        <ImportEnv
+          onClose={() => setImportingEnv(false)}
+          onParsed={(cfg) => {
+            setImportingEnv(false);
+            edit({ ...cfg, color: templateFor(cfg).color });
+          }}
+        />
+      )}
       <ContextMenu menu={menu} onClose={() => setMenu(null)} />
     </div>
   );
@@ -231,6 +245,67 @@ function ImportUrl(props: { onClose: () => void; onParsed: (cfg: ConnectionConfi
       />
       <p className="faint" style={{ fontSize: 12 }}>
         Supports postgres://, mysql://, mariadb://, sqlite://, redis://, rediss://, mongodb:// and mongodb+srv:// URLs.
+      </p>
+      {error && <div className="notice err">{error}</div>}
+    </Modal>
+  );
+}
+
+/** Reads a Laravel project's .env into a connection that opens in the form for review. */
+function ImportEnv(props: { onClose: () => void; onParsed: (cfg: ConnectionConfig) => void }) {
+  const [path, setPath] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async (target: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      props.onParsed(await api.readEnvConnection(target));
+    } catch (e) {
+      setError(errorMessage(e));
+      setBusy(false);
+    }
+  };
+  const choose = async (directory: boolean) => {
+    try {
+      const picked = await open({ multiple: false, directory, title: directory ? "Choose a Laravel project" : "Choose a .env file" });
+      if (typeof picked === "string") {
+        setPath(picked);
+        load(picked);
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+  return (
+    <Modal
+      title="Import from .env"
+      onClose={props.onClose}
+      footer={
+        <>
+          <button onClick={() => choose(true)} disabled={busy}>Choose folder…</button>
+          <button onClick={() => choose(false)} disabled={busy}>Choose file…</button>
+          <div className="spacer" />
+          <button onClick={props.onClose}>Cancel</button>
+          <button className="primary" onClick={() => load(path.trim())} disabled={!path.trim() || busy}>
+            Import
+          </button>
+        </>
+      }
+    >
+      <input
+        style={{ width: "100%" }}
+        className="mono"
+        autoFocus
+        placeholder="~/Code/my-app  or  ~/Code/my-app/.env.testing"
+        value={path}
+        onChange={(e) => setPath(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && path.trim() && !busy && load(path.trim())}
+      />
+      <p className="faint" style={{ fontSize: 12 }}>
+        Reads DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD or DB_URL from a project folder's
+        .env (or the file you pick). Sail service hosts become 127.0.0.1 on FORWARD_DB_PORT. Nothing is saved until you
+        review the connection. In the file dialog, <span className="kbd">⇧⌘.</span> shows hidden files.
       </p>
       {error && <div className="notice err">{error}</div>}
     </Modal>

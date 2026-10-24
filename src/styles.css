@@ -296,6 +296,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .sidebar-head { padding: 10px 10px 6px; display: flex; flex-direction: column; gap: 6px; }
 .sidebar-head select { width: 100%; }
 .sidebar-search { margin: 0 10px 6px; }
+.sidebar-toggle { margin: -2px 10px 4px; font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; cursor: default; user-select: none; }
+.sidebar-toggle input { margin: 0; }
 .table-list { flex: 1; overflow: auto; padding: 2px 6px 10px; }
 .group-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); padding: 10px 8px 4px; }
 .table-item {

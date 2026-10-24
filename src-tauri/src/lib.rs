@@ -4,6 +4,7 @@ mod ipc_tests;
 #[cfg(test)]
 mod live_tests;
 mod drivers;
+mod envfile;
 mod model;
 mod session;
 mod ssh;
@@ -69,6 +70,12 @@ async fn test_connection(state: State<'_, AppState>, mut config: ConnectionConfi
     let info = session.info().await;
     session.close().await;
     Ok(info.server_version)
+}
+
+/// Reads a Laravel `.env` (a project folder or the file) into a connection to review.
+#[tauri::command]
+async fn read_env_connection(path: String) -> CmdResult<ConnectionConfig> {
+    envfile::read_env_connection(&path).map_err(err)
 }
 
 // ---- sessions -----------------------------------------------------------
@@ -266,6 +273,7 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
             save_connection,
             delete_connection,
             test_connection,
+            read_env_connection,
             connect,
             disconnect,
             list_databases,

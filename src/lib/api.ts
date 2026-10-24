@@ -145,6 +145,8 @@ export const api = {
   saveConnection: (config: ConnectionConfig) => invoke<ConnectionConfig>("save_connection", { config }),
   deleteConnection: (id: string) => invoke<void>("delete_connection", { id }),
   testConnection: (config: ConnectionConfig) => invoke<string>("test_connection", { config }),
+  /** A Laravel project folder or .env file, read into an unsaved connection. */
+  readEnvConnection: (path: string) => invoke<ConnectionConfig>("read_env_connection", { path }),
   connect: (config: ConnectionConfig) => invoke<SessionInfo>("connect", { config }),
   disconnect: (sessionId: string) => invoke<void>("disconnect", { sessionId }),
   listDatabases: (sessionId: string) => invoke<string[]>("list_databases", { sessionId }),
