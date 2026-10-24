@@ -3,7 +3,65 @@
 
 use anyhow::{bail, Result};
 
-use crate::model::{CellValue, ChangeSet, DriverKind, FetchRequest, Filter, RowChange};
+use crate::model::{Cell, CellValue, ChangeSet, DriverKind, FetchRequest, Filter, RowChange};
+
+/// Deeper foreign-key chains than this aren't followed when cascading.
+const MAX_CASCADE_DEPTH: usize = 8;
+/// Upper bound on the DELETE statements a cascade may add.
+const MAX_CASCADE_STEPS: usize = 200;
+
+/// `table(columns)` references `parent_table(parent_columns)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForeignKey {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    pub columns: Vec<String>,
+    pub parent_schema: String,
+    pub parent_table: String,
+    pub parent_columns: Vec<String>,
+    pub on_delete: String,
+}
+
+impl ForeignKey {
+    /// Groups the rows of `Dialect::foreign_keys_sql` (one per column) into keys.
+    pub fn from_rows(rows: Vec<Vec<Cell>>) -> Vec<ForeignKey> {
+        let mut out: Vec<ForeignKey> = Vec::new();
+        for row in rows {
+            let mut it = row.into_iter().map(Option::unwrap_or_default);
+            let mut next = || it.next().unwrap_or_default();
+            let (schema, table, name, column) = (next(), next(), next(), next());
+            let (parent_schema, parent_table, parent_column, on_delete) = (next(), next(), next(), next());
+            match out.last_mut() {
+                Some(fk) if fk.schema == schema && fk.table == table && fk.name == name => {
+                    fk.columns.push(column);
+                    fk.parent_columns.push(parent_column);
+                }
+                _ => out.push(ForeignKey {
+                    schema,
+                    table,
+                    name,
+                    columns: vec![column],
+                    parent_schema,
+                    parent_table,
+                    parent_columns: vec![parent_column],
+                    on_delete: on_delete.to_uppercase(),
+                }),
+            }
+        }
+        out
+    }
+}
+
+/// Rows of `fk.table` that must be deleted before the staged deletes can run:
+/// those `filter` selects, i.e. whose `fk.columns` point at doomed rows.
+#[derive(Clone, Debug)]
+pub struct CascadeStep {
+    pub fk: ForeignKey,
+    /// 1 for direct references to the deleted rows.
+    pub depth: u32,
+    pub filter: String,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SqlEngine {
@@ -188,6 +246,46 @@ impl Dialect {
         }
     }
 
+    /// Every foreign key that can reach `schema`, one row per column in key
+    /// order: (schema, table, constraint, column, parent schema, parent table,
+    /// parent column, ON DELETE rule). SQLite keys never leave their database.
+    pub fn foreign_keys_sql(&self, schema: &str) -> String {
+        match self.0 {
+            SqlEngine::Postgres => "SELECT cn.nspname, cl.relname, c.conname, a.attname, pn.nspname, pl.relname, pa.attname, \
+                 CASE c.confdeltype WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' \
+                 WHEN 'd' THEN 'SET DEFAULT' ELSE 'NO ACTION' END \
+                 FROM pg_constraint c \
+                 JOIN pg_class cl ON cl.oid = c.conrelid JOIN pg_namespace cn ON cn.oid = cl.relnamespace \
+                 JOIN pg_class pl ON pl.oid = c.confrelid JOIN pg_namespace pn ON pn.oid = pl.relnamespace \
+                 CROSS JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(att, ref_att, pos) \
+                 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.att \
+                 JOIN pg_attribute pa ON pa.attrelid = c.confrelid AND pa.attnum = k.ref_att \
+                 WHERE c.contype = 'f' AND NOT cl.relispartition AND NOT pl.relispartition \
+                 ORDER BY cn.nspname, cl.relname, c.conname, k.pos"
+                .into(),
+            SqlEngine::Mysql => "SELECT k.TABLE_SCHEMA, k.TABLE_NAME, k.CONSTRAINT_NAME, k.COLUMN_NAME, \
+                 k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.DELETE_RULE \
+                 FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r \
+                 ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME \
+                 AND r.TABLE_NAME = k.TABLE_NAME \
+                 WHERE k.REFERENCED_TABLE_NAME IS NOT NULL \
+                 ORDER BY k.TABLE_SCHEMA, k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION"
+                .into(),
+            // A key without target columns points at the parent's primary key.
+            SqlEngine::Sqlite => {
+                let lit = self.literal(schema);
+                format!(
+                    "SELECT {lit}, m.name, m.name || '#' || f.id, f.\"from\", {lit}, f.\"table\", \
+                     COALESCE(f.\"to\", (SELECT p.name FROM pragma_table_info(f.\"table\", {lit}) p WHERE p.pk = f.seq + 1)), \
+                     f.on_delete \
+                     FROM {}.sqlite_master m, pragma_foreign_key_list(m.name, {lit}) f \
+                     WHERE m.type = 'table' ORDER BY m.name, f.id, f.seq",
+                    self.ident(schema)
+                )
+            }
+        }
+    }
+
     // ---- browsing ------------------------------------------------------
 
     fn text_expr(&self, column: &str) -> String {
@@ -315,9 +413,90 @@ impl Dialect {
         }
     }
 
-    pub fn change_statements(&self, set: &ChangeSet) -> Result<Vec<String>> {
+    /// SQLite matches table names without regard to case.
+    fn same_table(&self, a: (&str, &str), b: (&str, &str)) -> bool {
+        match self.0 {
+            SqlEngine::Sqlite => a.0.eq_ignore_ascii_case(b.0) && a.1.eq_ignore_ascii_case(b.1),
+            _ => a == b,
+        }
+    }
+
+    /// `a` or `(a, b)`, for comparing a (possibly composite) key with IN.
+    fn key_tuple(&self, columns: &[String]) -> String {
+        let cols: Vec<_> = columns.iter().map(|c| self.ident(c)).collect();
+        match cols.as_slice() {
+            [one] => one.clone(),
+            _ => format!("({})", cols.join(", ")),
+        }
+    }
+
+    /// Every foreign-key path that leads to the rows `set` deletes, deepest
+    /// first, so deleting each step's rows in order clears the way for the
+    /// staged deletes. Paths that come back to a table already on them
+    /// (self-references, cycles) aren't followed.
+    pub fn cascade_steps(&self, set: &ChangeSet, fks: &[ForeignKey]) -> Result<Vec<CascadeStep>> {
+        let deleted: Vec<String> = set
+            .changes
+            .iter()
+            .filter_map(|c| match c {
+                RowChange::Delete { key } if !key.is_empty() => {
+                    Some(format!("({})", self.match_clause(key, set.key_is_primary)))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut steps = Vec::new();
+        if !deleted.is_empty() {
+            let mut path = vec![(set.schema.clone(), set.table.clone())];
+            self.walk_references(&deleted.join(" OR "), fks, &mut path, &mut steps)?;
+        }
+        Ok(steps)
+    }
+
+    /// Adds the steps for rows referencing the rows of the last table on
+    /// `path` that `filter` selects.
+    fn walk_references(
+        &self,
+        filter: &str,
+        fks: &[ForeignKey],
+        path: &mut Vec<(String, String)>,
+        steps: &mut Vec<CascadeStep>,
+    ) -> Result<()> {
+        let (schema, table) = path.last().cloned().expect("path starts at the edited table");
+        for fk in fks {
+            if !self.same_table((&fk.parent_schema, &fk.parent_table), (&schema, &table))
+                || path.iter().any(|(s, t)| self.same_table((s, t), (&fk.schema, &fk.table)))
+            {
+                continue;
+            }
+            if path.len() > MAX_CASCADE_DEPTH || steps.len() >= MAX_CASCADE_STEPS {
+                bail!("{table} has too many layers of dependent tables to cascade the delete");
+            }
+            let child_filter = format!(
+                "{} IN (SELECT {} FROM {} WHERE {filter})",
+                self.key_tuple(&fk.columns),
+                fk.parent_columns.iter().map(|c| self.ident(c)).collect::<Vec<_>>().join(", "),
+                self.table(&schema, &table),
+            );
+            let depth = path.len() as u32;
+            path.push((fk.schema.clone(), fk.table.clone()));
+            self.walk_references(&child_filter, fks, path, steps)?;
+            path.pop();
+            steps.push(CascadeStep { fk: fk.clone(), depth, filter: child_filter });
+        }
+        Ok(())
+    }
+
+    pub fn cascade_count_sql(&self, step: &CascadeStep) -> String {
+        format!("SELECT COUNT(*) FROM {} WHERE {}", self.table(&step.fk.schema, &step.fk.table), step.filter)
+    }
+
+    /// Statements for `set`. The `cascade` steps' deletes run right before the
+    /// first staged delete.
+    pub fn change_statements(&self, set: &ChangeSet, cascade: &[CascadeStep]) -> Result<Vec<String>> {
         let table = self.table(&set.schema, &set.table);
-        let mut out = Vec::with_capacity(set.changes.len());
+        let mut out = Vec::with_capacity(set.changes.len() + cascade.len());
+        let mut cascade = cascade.iter();
         for change in &set.changes {
             match change {
                 RowChange::Insert { values } => {
@@ -357,6 +536,13 @@ impl Dialect {
                 RowChange::Delete { key } => {
                     if key.is_empty() {
                         bail!("cannot delete a row of {table} without identifying columns");
+                    }
+                    for step in cascade.by_ref() {
+                        out.push(format!(
+                            "DELETE FROM {} WHERE {}",
+                            self.table(&step.fk.schema, &step.fk.table),
+                            step.filter
+                        ));
                     }
                     let cond = self.match_clause(key, set.key_is_primary);
                     let (cond, limit) = self.single_row_where(&table, &cond, set.key_is_primary);
@@ -421,6 +607,7 @@ mod tests {
             schema: "shop".into(),
             table: "items".into(),
             key_is_primary: true,
+            cascade: false,
             changes: vec![
                 RowChange::Update { key: vec![cv("id", Some("7"))], values: vec![cv("name", Some("O'Brien")), cv("note", None)] },
                 RowChange::Insert { values: vec![cv("name", Some("x"))] },
@@ -428,7 +615,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            my.change_statements(&set).unwrap(),
+            my.change_statements(&set, &[]).unwrap(),
             vec![
                 "UPDATE `shop`.`items` SET `name` = 'O''Brien', `note` = NULL WHERE `id` = '7'",
                 "INSERT INTO `shop`.`items` (`name`) VALUES ('x')",
@@ -441,11 +628,74 @@ mod tests {
             schema: "public".into(),
             table: "logs".into(),
             key_is_primary: false,
+            cascade: false,
             changes: vec![RowChange::Delete { key: vec![cv("msg", Some("a")), cv("at", None)] }],
         };
         assert_eq!(
-            pg.change_statements(&set).unwrap(),
+            pg.change_statements(&set, &[]).unwrap(),
             vec!["DELETE FROM \"public\".\"logs\" WHERE ctid = (SELECT ctid FROM \"public\".\"logs\" WHERE \"msg\"::text = 'a' AND \"at\"::text IS NULL LIMIT 1)"]
         );
+    }
+
+    fn fk(table: &str, cols: &[&str], parent: &str, parent_cols: &[&str]) -> ForeignKey {
+        ForeignKey {
+            schema: "public".into(),
+            table: table.into(),
+            name: format!("{table}_fk"),
+            columns: cols.iter().map(|c| c.to_string()).collect(),
+            parent_schema: "public".into(),
+            parent_table: parent.into(),
+            parent_columns: parent_cols.iter().map(|c| c.to_string()).collect(),
+            on_delete: "NO ACTION".into(),
+        }
+    }
+
+    #[test]
+    fn foreign_keys_group_by_constraint() {
+        let row = |c: &str, p: &str| -> Vec<Cell> {
+            ["s", "lines", "fk1", c, "s", "orders", p, "cascade"].iter().map(|v| Some(v.to_string())).collect()
+        };
+        let fks = ForeignKey::from_rows(vec![row("order_id", "id"), row("shop", "shop")]);
+        assert_eq!(fks.len(), 1);
+        assert_eq!(fks[0].columns, ["order_id", "shop"]);
+        assert_eq!(fks[0].parent_columns, ["id", "shop"]);
+        assert_eq!(fks[0].on_delete, "CASCADE");
+    }
+
+    #[test]
+    fn cascade_deletes_dependants_deepest_first() {
+        let pg = Dialect(SqlEngine::Postgres);
+        let fks = vec![
+            fk("orders", &["customer_id"], "customers", &["id"]),
+            fk("lines", &["order_id", "shop"], "orders", &["id", "shop"]),
+            // Self-reference and a cycle back to the start aren't followed.
+            fk("customers", &["referred_by"], "customers", &["id"]),
+            fk("customers", &["last_order"], "orders", &["id"]),
+        ];
+        let set = ChangeSet {
+            schema: "public".into(),
+            table: "customers".into(),
+            key_is_primary: true,
+            cascade: true,
+            changes: vec![
+                RowChange::Update { key: vec![cv("id", Some("1"))], values: vec![cv("name", Some("x"))] },
+                RowChange::Delete { key: vec![cv("id", Some("2"))] },
+                RowChange::Delete { key: vec![cv("id", Some("3"))] },
+            ],
+        };
+        let steps = pg.cascade_steps(&set, &fks).unwrap();
+        assert_eq!(steps.iter().map(|s| (s.fk.table.as_str(), s.depth)).collect::<Vec<_>>(), [("lines", 2), ("orders", 1)]);
+        let orders = "\"customer_id\" IN (SELECT \"id\" FROM \"public\".\"customers\" WHERE (\"id\" = '2') OR (\"id\" = '3'))";
+        assert_eq!(
+            pg.change_statements(&set, &steps).unwrap(),
+            vec![
+                "UPDATE \"public\".\"customers\" SET \"name\" = 'x' WHERE \"id\" = '1'".to_string(),
+                format!("DELETE FROM \"public\".\"lines\" WHERE (\"order_id\", \"shop\") IN (SELECT \"id\", \"shop\" FROM \"public\".\"orders\" WHERE {orders})"),
+                format!("DELETE FROM \"public\".\"orders\" WHERE {orders}"),
+                "DELETE FROM \"public\".\"customers\" WHERE \"id\" = '2'".to_string(),
+                "DELETE FROM \"public\".\"customers\" WHERE \"id\" = '3'".to_string(),
+            ]
+        );
+        assert_eq!(pg.cascade_count_sql(&steps[1]), format!("SELECT COUNT(*) FROM \"public\".\"orders\" WHERE {orders}"));
     }
 }

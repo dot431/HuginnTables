@@ -60,6 +60,11 @@ pub trait Browser: Send + Sync {
     async fn schema_columns(&self, schema: &str) -> Result<BTreeMap<String, Vec<String>>>;
     async fn fetch_rows(&self, req: &FetchRequest) -> Result<QueryResult>;
     async fn count_rows(&self, req: &FetchRequest) -> Result<u64>;
+    /// Rows in other tables that point, through foreign keys, at the rows
+    /// `set` deletes. Engines without foreign keys have none.
+    async fn delete_references(&self, _set: &ChangeSet) -> Result<Vec<RowReference>> {
+        Ok(Vec::new())
+    }
     async fn preview_changes(&self, set: &ChangeSet) -> Result<Vec<String>>;
     async fn commit_changes(&self, set: &ChangeSet) -> Result<u64>;
 }

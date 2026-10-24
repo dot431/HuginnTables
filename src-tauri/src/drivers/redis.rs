@@ -675,6 +675,7 @@ mod tests {
             schema: "db0".into(),
             table: "*".into(),
             key_is_primary: true,
+            cascade: false,
             changes: vec![
                 RowChange::Update { key: vec![cv("key", Some("h"))], values: vec![cv("value", Some(r#"{"a":1,"b":"x"}"#)), cv("key", Some("h2"))] },
                 RowChange::Update { key: vec![cv("key", Some("s"))], values: vec![cv("ttl", None)] },

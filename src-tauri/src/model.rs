@@ -219,5 +219,27 @@ pub struct ChangeSet {
     /// True when `key` columns form the primary key. Otherwise every original
     /// value is used to find the row and only one matching row is touched.
     pub key_is_primary: bool,
+    /// Also delete every row in other tables that references a deleted row,
+    /// following foreign keys all the way down.
+    #[serde(default)]
+    pub cascade: bool,
     pub changes: Vec<RowChange>,
+}
+
+/// Rows of another table that point, through a foreign key, at rows staged for
+/// deletion (directly, or through rows that would be cascaded themselves).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RowReference {
+    pub schema: String,
+    pub table: String,
+    /// The referencing columns of `table`.
+    pub columns: Vec<String>,
+    /// The table those columns point at.
+    pub parent_table: String,
+    /// The constraint's own rule: "NO ACTION", "RESTRICT", "CASCADE", "SET NULL"…
+    pub on_delete: String,
+    /// 1 for rows pointing at the deleted rows, 2 for rows pointing at those, …
+    pub depth: u32,
+    pub rows: u64,
 }

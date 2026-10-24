@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 use super::{statement_context, Browser, Driver, Engine};
-use crate::dialect::{Dialect, SqlEngine};
+use crate::dialect::{CascadeStep, Dialect, ForeignKey, SqlEngine};
 use crate::model::*;
 
 pub struct SqlBrowser {
@@ -54,6 +54,21 @@ pub async fn engine(cfg: &ConnectionConfig, driver: Arc<dyn Driver>, dialect: Di
 impl SqlBrowser {
     async fn query(&self, sql: &str) -> Result<Vec<QueryResult>> {
         self.driver.query(sql).await.map_err(|e| statement_context(e, sql))
+    }
+
+    /// What has to be deleted first for `set`'s deletes to go through; the
+    /// catalog is only read when there are deletes.
+    async fn cascade_steps(&self, set: &ChangeSet) -> Result<Vec<CascadeStep>> {
+        if !set.changes.iter().any(|c| matches!(c, RowChange::Delete { .. })) {
+            return Ok(Vec::new());
+        }
+        let fks = ForeignKey::from_rows(rows_of(self.query(&self.dialect.foreign_keys_sql(&set.schema)).await?));
+        self.dialect.cascade_steps(set, &fks)
+    }
+
+    async fn statements(&self, set: &ChangeSet) -> Result<Vec<String>> {
+        let cascade = if set.cascade { self.cascade_steps(set).await? } else { Vec::new() };
+        self.dialect.change_statements(set, &cascade)
     }
 }
 
@@ -126,12 +141,34 @@ impl Browser for SqlBrowser {
         count.parse().context("unexpected COUNT(*) result")
     }
 
+    async fn delete_references(&self, set: &ChangeSet) -> Result<Vec<RowReference>> {
+        let mut out = Vec::new();
+        for step in self.cascade_steps(set).await? {
+            let sql = self.dialect.cascade_count_sql(&step);
+            let rows: u64 = first_column(self.query(&sql).await?).pop().unwrap_or_default().parse().unwrap_or(0);
+            if rows > 0 {
+                out.push(RowReference {
+                    schema: step.fk.schema,
+                    table: step.fk.table,
+                    columns: step.fk.columns,
+                    parent_table: step.fk.parent_table,
+                    on_delete: step.fk.on_delete,
+                    depth: step.depth,
+                    rows,
+                });
+            }
+        }
+        // Steps come deepest first; show the direct references first.
+        out.sort_by_key(|r| r.depth);
+        Ok(out)
+    }
+
     async fn preview_changes(&self, set: &ChangeSet) -> Result<Vec<String>> {
-        self.dialect.change_statements(set)
+        self.statements(set).await
     }
 
     async fn commit_changes(&self, set: &ChangeSet) -> Result<u64> {
-        let statements = self.dialect.change_statements(set)?;
+        let statements = self.statements(set).await?;
         self.driver.execute_in_transaction(&statements).await
     }
 }

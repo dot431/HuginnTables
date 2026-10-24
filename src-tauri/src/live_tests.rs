@@ -93,6 +93,7 @@ async fn exercise(s: &Session, schema: &str) {
         schema: schema.into(),
         table: "people".into(),
         key_is_primary: true,
+        cascade: false,
         changes: vec![
             RowChange::Update { key: vec![cv("id", Some("1"))], values: vec![cv("name", Some("Ann 'B' \\ \n"))] },
             RowChange::Delete { key: vec![cv("id", Some("2"))] },
@@ -113,6 +114,7 @@ async fn exercise(s: &Session, schema: &str) {
         schema: schema.into(),
         table: "people".into(),
         key_is_primary: true,
+        cascade: false,
         changes: vec![
             RowChange::Update { key: vec![cv("id", Some("1"))], values: vec![cv("name", Some("changed"))] },
             RowChange::Update { key: vec![cv("id", Some("3"))], values: vec![cv("name", None)] },
@@ -127,6 +129,7 @@ async fn exercise(s: &Session, schema: &str) {
         schema: schema.into(),
         table: "nokey".into(),
         key_is_primary: false,
+        cascade: false,
         changes: vec![RowChange::Delete { key: vec![cv("a", Some("1")), cv("b", None)] }],
     };
     assert_eq!(s.commit_changes(&dupes).await.unwrap(), 1);
@@ -140,6 +143,45 @@ async fn exercise(s: &Session, schema: &str) {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].columns[0].name, "one");
     assert!(results[1].error.is_some());
+}
+
+/// Deleting rows other tables point at (through a composite key, then a
+/// single-column one): they're reported, a plain commit is refused and a
+/// cascading one removes them, deepest first.
+async fn cascade(s: &Session, schema: &str) {
+    exec(s, &[
+        "DROP TABLE IF EXISTS sightings",
+        "DROP TABLE IF EXISTS ravens",
+        "DROP TABLE IF EXISTS owners",
+        "CREATE TABLE owners (clan varchar(20), name varchar(20), PRIMARY KEY (clan, name))",
+        "CREATE TABLE ravens (id int PRIMARY KEY, clan varchar(20), owner varchar(20), \
+         FOREIGN KEY (clan, owner) REFERENCES owners (clan, name))",
+        "CREATE TABLE sightings (raven int NOT NULL, at varchar(20), \
+         FOREIGN KEY (raven) REFERENCES ravens (id) ON DELETE CASCADE)",
+        "INSERT INTO owners VALUES ('aesir', 'Odin'), ('aesir', 'Loki')",
+        "INSERT INTO ravens VALUES (1, 'aesir', 'Odin'), (2, 'aesir', 'Odin'), (3, 'aesir', 'Loki')",
+        "INSERT INTO sightings VALUES (1, 'dawn'), (1, 'dusk'), (2, 'noon'), (3, 'night')",
+    ]).await;
+    let mut set = ChangeSet {
+        schema: schema.into(),
+        table: "owners".into(),
+        key_is_primary: true,
+        cascade: false,
+        changes: vec![RowChange::Delete { key: vec![cv("clan", Some("aesir")), cv("name", Some("Odin"))] }],
+    };
+    let refs = s.delete_references(&set).await.unwrap();
+    let summary: Vec<_> = refs.iter().map(|r| (r.table.as_str(), r.parent_table.as_str(), r.depth, r.rows)).collect();
+    assert_eq!(summary, [("ravens", "owners", 1, 2), ("sightings", "ravens", 2, 3)]);
+    assert_eq!(refs[0].columns, ["clan", "owner"]);
+    assert_eq!(refs[1].on_delete, "CASCADE");
+
+    assert!(s.commit_changes(&set).await.is_err());
+    set.cascade = true;
+    assert_eq!(s.commit_changes(&set).await.unwrap(), 6);
+    let left = s
+        .run_statements(&["SELECT (SELECT COUNT(*) FROM owners), (SELECT COUNT(*) FROM ravens), (SELECT COUNT(*) FROM sightings)".into()])
+        .await;
+    assert_eq!(left[0].rows[0], [Some("1".into()), Some("1".into()), Some("1".into())]);
 }
 
 #[tokio::test]
@@ -160,6 +202,7 @@ async fn postgres_end_to_end() {
     ]).await;
     assert!(s.list_schemas().await.unwrap().contains(&"public".to_string()));
     exercise(&s, "public").await;
+    cascade(&s, "public").await;
 
     let dbs = s.list_databases().await.unwrap();
     assert!(dbs.contains(&"postgres".to_string()));
@@ -198,6 +241,7 @@ async fn mysql_end_to_end() {
     ]).await;
     assert!(s.list_schemas().await.unwrap().contains(&"shop".to_string()));
     exercise(&s, "shop").await;
+    cascade(&s, "shop").await;
 
     exec(&s, &["CREATE DATABASE IF NOT EXISTS huginn_other"]).await;
     s.use_schema("huginn_other").await.unwrap();
@@ -235,6 +279,8 @@ async fn sqlite_end_to_end() {
     ]).await;
     assert_eq!(s.list_schemas().await.unwrap(), ["main"]);
     exercise(&s, "main").await;
+    exec(&s, &["PRAGMA foreign_keys = ON"]).await;
+    cascade(&s, "main").await;
     s.close().await;
     let _ = std::fs::remove_file(path);
 }
@@ -339,6 +385,7 @@ async fn redis_end_to_end() {
         schema: "db0".into(),
         table: "*".into(),
         key_is_primary: true,
+        cascade: false,
         changes: vec![
             RowChange::Update { key: vec![cv("key", Some("user:2"))], values: vec![cv("value", Some(r#"{"name":"Bobby","age":31}"#))] },
             RowChange::Update { key: vec![cv("key", Some("session:abc"))], values: vec![cv("ttl", None)] },
@@ -412,6 +459,7 @@ async fn mongodb_end_to_end() {
         schema: "shop".into(),
         table: "people".into(),
         key_is_primary: true,
+        cascade: false,
         changes: vec![
             RowChange::Update { key: vec![cv("_id", Some("1"))], values: vec![cv("age", Some("42")), cv("tags", None)] },
             RowChange::Insert { values: vec![cv("_id", Some("4")), cv("name", Some("123")), cv("age", Some("50"))] },
@@ -489,7 +537,7 @@ async fn bigquery_emulator_end_to_end() {
     assert!(q[0].error.is_none(), "{q:?}");
     assert_eq!(rows_of(&q), vec![vec![Some("Ann".into()), Some("25".into())], vec![Some("O'Hara".into()), Some("14.5".into())]]);
 
-    let set = ChangeSet { schema: "shop".into(), table: "orders".into(), key_is_primary: false, changes: vec![] };
+    let set = ChangeSet { schema: "shop".into(), table: "orders".into(), key_is_primary: false, cascade: false, changes: vec![] };
     assert!(s.commit_changes(&set).await.is_err());
     s.close().await;
 }

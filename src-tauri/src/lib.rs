@@ -176,6 +176,15 @@ async fn cancel_query(state: State<'_, AppState>, session_id: String) -> CmdResu
 }
 
 #[tauri::command]
+async fn delete_references(
+    state: State<'_, AppState>,
+    session_id: String,
+    changes: ChangeSet,
+) -> CmdResult<Vec<RowReference>> {
+    state.session(&session_id).await?.delete_references(&changes).await.map_err(err)
+}
+
+#[tauri::command]
 async fn preview_changes(
     state: State<'_, AppState>,
     session_id: String,
@@ -270,6 +279,7 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
             count_rows,
             run_query,
             cancel_query,
+            delete_references,
             preview_changes,
             commit_changes,
         ])

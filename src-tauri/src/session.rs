@@ -167,6 +167,10 @@ impl Session {
         out
     }
 
+    pub async fn delete_references(&self, set: &ChangeSet) -> Result<Vec<RowReference>> {
+        self.browser().await.delete_references(set).await
+    }
+
     pub async fn preview_changes(&self, set: &ChangeSet) -> Result<Vec<String>> {
         self.browser().await.preview_changes(set).await
     }

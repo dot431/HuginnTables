@@ -154,6 +154,7 @@ button:disabled { opacity: 0.45; }
 button.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-text); }
 button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent-strong); }
 button.danger { color: var(--danger); }
+button.primary.danger-fill { background: var(--danger); border-color: var(--danger); color: var(--bg-elevated); }
 button.ghost { border-color: transparent; background: transparent; }
 button.ghost:hover:not(:disabled) { background: var(--bg-hover); }
 button.icon { padding: 3px 7px; }

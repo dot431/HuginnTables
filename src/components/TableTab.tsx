@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult } from "../lib/api";
+import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, RowReference } from "../lib/api";
 import * as S from "../lib/staging";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
 import { ContextMenu, MenuState, Modal, toast } from "./ui";
 
 const PAGE_SIZES = [100, 300, 1000, 5000];
+
+/** Engines with foreign keys, where a delete can leave other rows pointing nowhere. */
+const HAS_FOREIGN_KEYS: DriverKind[] = ["postgres", "mysql", "sqlite"];
 
 const RAW_FILTER: Record<DriverKind, { label: string; placeholder: string }> = {
   postgres: { label: "WHERE", placeholder: "price > 10 AND status = 'active'" },
@@ -48,7 +51,8 @@ export function TableTab(props: {
   const [staging, setStaging] = useState<S.Staging>(S.emptyStaging);
   const [selectedRow, setSelectedRow] = useState<number | undefined>();
   const [showDetail, setShowDetail] = useState(false);
-  const [preview, setPreview] = useState<string[] | null>(null);
+  const [preview, setPreview] = useState<{ sql: string[]; cascade: boolean } | null>(null);
+  const [references, setReferences] = useState<RowReference[] | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [committing, setCommitting] = useState(false);
   const loadSeq = useRef(0);
@@ -109,11 +113,24 @@ export function TableTab(props: {
 
   const changeSet = () => S.buildChangeSet(staging, rows, columns, primaryKey, schema, table);
 
-  const commit = async () => {
+  /**
+   * Commits the staged changes. Unless `cascade` is set, deleting rows that
+   * other tables still point at stops here and asks what to do.
+   */
+  const commit = async (cascade = false) => {
     if (!pending || committing) return;
     setCommitting(true);
     try {
-      const affected = await api.commitChanges(sessionId, changeSet());
+      const set = { ...changeSet(), cascade };
+      if (!cascade && staging.deleted.size > 0 && HAS_FOREIGN_KEYS.includes(props.driver)) {
+        const refs = await api.deleteReferences(sessionId, set);
+        if (refs.length) {
+          setReferences(refs);
+          return;
+        }
+      }
+      setReferences(null);
+      const affected = await api.commitChanges(sessionId, set);
       toast(`Committed — ${affected} row${affected === 1 ? "" : "s"} affected`, "success");
       setStaging(S.emptyStaging());
       await load();
@@ -124,9 +141,9 @@ export function TableTab(props: {
     }
   };
 
-  const showPreview = async () => {
+  const showPreview = async (cascade = false) => {
     try {
-      setPreview(await api.previewChanges(sessionId, changeSet()));
+      setPreview({ sql: await api.previewChanges(sessionId, { ...changeSet(), cascade }), cascade });
     } catch (e) {
       toast(errorMessage(e), "error");
     }
@@ -323,8 +340,8 @@ export function TableTab(props: {
           <>
             <span className="pending-badge">{pending} pending</span>
             <button onClick={() => setStaging(S.emptyStaging())}>Discard</button>
-            <button onClick={showPreview} title="Preview SQL (⇧⌘P)">Preview SQL</button>
-            <button className="primary" onClick={commit} disabled={committing} title="Commit (⌘S)">
+            <button onClick={() => showPreview()} title="Preview SQL (⇧⌘P)">Preview SQL</button>
+            <button className="primary" onClick={() => commit()} disabled={committing} title="Commit (⌘S)">
               {committing ? "Committing…" : "Commit"}
             </button>
           </>
@@ -371,16 +388,92 @@ export function TableTab(props: {
                     : "Runs in a single transaction."}
               </span>
               <div className="spacer" />
-              <button onClick={() => navigator.clipboard.writeText(previewText(preview))}>Copy</button>
+              <button onClick={() => navigator.clipboard.writeText(previewText(preview.sql))}>Copy</button>
               <button onClick={() => setPreview(null)}>Close</button>
-              <button className="primary" onClick={() => (setPreview(null), commit())}>Commit</button>
+              <button className="primary" onClick={() => (setPreview(null), commit(preview.cascade))}>Commit</button>
             </>
           }
         >
-          <pre className="sql-preview">{previewText(preview)}</pre>
+          <pre className="sql-preview">{previewText(preview.sql)}</pre>
         </Modal>
       )}
+      {references && (
+        <DeleteReferences
+          table={table}
+          deleting={staging.deleted.size}
+          references={references}
+          committing={committing}
+          onStop={() => (setReferences(null), setStaging(S.clearDeletes))}
+          onPreview={() => (setReferences(null), showPreview(true))}
+          onCascade={() => commit(true)}
+          onClose={() => setReferences(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** Asks whether to keep the rows or delete everything that points at them too. */
+function DeleteReferences(props: {
+  table: string;
+  deleting: number;
+  references: RowReference[];
+  committing: boolean;
+  onStop: () => void;
+  onPreview: () => void;
+  onCascade: () => void;
+  onClose: () => void;
+}) {
+  const total = props.references.reduce((n, r) => n + r.rows, 0);
+  const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+  return (
+    <Modal
+      title={`${props.deleting === 1 ? "This row is" : "These rows are"} still referenced`}
+      wide
+      onClose={props.onClose}
+      footer={
+        <>
+          <button onClick={props.onPreview}>Preview SQL</button>
+          <div className="spacer" />
+          <button onClick={props.onStop}>Stop deleting</button>
+          <button className="primary danger-fill" onClick={props.onCascade} disabled={props.committing}>
+            {props.committing ? "Deleting…" : `Delete all ${plural(props.deleting + total, "row")}`}
+          </button>
+        </>
+      }
+    >
+      <p style={{ marginTop: 0 }}>
+        Deleting {plural(props.deleting, "row")} from <b>{props.table}</b> affects {plural(total, "row")} in other
+        tables that point at {props.deleting === 1 ? "it" : "them"}:
+      </p>
+      <table className="plain">
+        <thead>
+          <tr>
+            <th>Table</th>
+            <th>Points at</th>
+            <th>On delete</th>
+            <th style={{ textAlign: "right" }}>Rows</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.references.map((r, i) => (
+            <tr key={i}>
+              <td style={{ paddingLeft: 10 + (r.depth - 1) * 18 }}>
+                {r.depth > 1 && <span className="faint">↳ </span>}
+                <b>{r.table}</b>
+              </td>
+              <td className="mono muted">{r.columns.join(", ")} → {r.parentTable}</td>
+              <td className="mono muted">{r.onDelete}</td>
+              <td style={{ textAlign: "right" }}>{r.rows.toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted" style={{ marginBottom: 0 }}>
+        <b>Stop deleting</b> keeps every row and unmarks the deletion; your other changes stay staged.{" "}
+        <b>Delete all</b> removes the rows above too, deepest first, in one transaction.
+      </p>
+    </Modal>
   );
 }
 

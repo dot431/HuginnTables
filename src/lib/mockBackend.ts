@@ -132,6 +132,14 @@ const handlers: Record<string, (a: any) => unknown> = {
           : { sql, columns: [], rows: [], hasRows: false, rowsAffected: 3, durationMs: 1, truncated: false },
     ),
   cancel_query: () => undefined,
+  // Pretend every customer has two orders, each with three order lines.
+  delete_references: ({ changes }: { changes: ChangeSet }) => {
+    const n = changes.table === "customers" ? changes.changes.filter((c) => c.kind === "delete").length : 0;
+    return n === 0 ? [] : [
+      { schema: changes.schema, table: "orders", columns: ["customer_id"], parentTable: "customers", onDelete: "NO ACTION", depth: 1, rows: 2 * n },
+      { schema: changes.schema, table: "order_lines", columns: ["order_id"], parentTable: "orders", onDelete: "CASCADE", depth: 2, rows: 6 * n },
+    ];
+  },
   preview_changes: ({ changes }) => changes.changes.map((c: { kind: string }) => `-- ${c.kind} ${JSON.stringify(c)}`),
   commit_changes: ({ changes }) => applyChanges(changes),
 };

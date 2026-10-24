@@ -114,7 +114,22 @@ export interface ChangeSet {
   schema: string;
   table: string;
   keyIsPrimary: boolean;
+  /** Also delete every row in other tables that references a deleted row. */
+  cascade?: boolean;
   changes: RowChange[];
+}
+
+/** Rows of another table that point, through a foreign key, at rows being deleted. */
+export interface RowReference {
+  schema: string;
+  table: string;
+  columns: string[];
+  parentTable: string;
+  /** The constraint's own rule: "NO ACTION", "RESTRICT", "CASCADE", "SET NULL"… */
+  onDelete: string;
+  /** 1 for direct references, 2 for rows referencing those, … */
+  depth: number;
+  rows: number;
 }
 
 export const api = {
@@ -140,6 +155,8 @@ export const api = {
   runQuery: (sessionId: string, statements: string[]) =>
     invoke<QueryResult[]>("run_query", { sessionId, statements }),
   cancelQuery: (sessionId: string) => invoke<void>("cancel_query", { sessionId }),
+  deleteReferences: (sessionId: string, changes: ChangeSet) =>
+    invoke<RowReference[]>("delete_references", { sessionId, changes }),
   previewChanges: (sessionId: string, changes: ChangeSet) =>
     invoke<string[]>("preview_changes", { sessionId, changes }),
   commitChanges: (sessionId: string, changes: ChangeSet) =>

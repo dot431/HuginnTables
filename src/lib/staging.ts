@@ -83,6 +83,11 @@ export function revertRows(s: Staging, rowsLength: number, targets: number[]): S
   return { edits, deleted, inserted: s.inserted.filter((_, i) => !newRows.has(i)) };
 }
 
+/** Unmarks every row staged for deletion, keeping the other changes. */
+export function clearDeletes(s: Staging): Staging {
+  return { ...s, deleted: new Set() };
+}
+
 /**
  * Turns staged edits into a change set. Rows are identified by the primary
  * key when there is one, otherwise by every original value.
