@@ -526,6 +526,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
             ) : (
               <QueryTab
                 sessionId={sessionId}
+                connectionId={info.connectionId}
                 driver={info.driver}
                 storageKey={`huginn.query.${info.connectionId}.${t.slot}`}
                 initialSql={t.initialSql}
