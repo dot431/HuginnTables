@@ -2,7 +2,7 @@
  * In-memory stand-in for the Rust backend, installed only by `npm run dev` in a
  * plain browser (outside Tauri) so the UI can be developed and tested there.
  */
-import type { Cell, ChangeSet, ConnectionConfig, FetchRequest, QueryResult } from "./api";
+import type { Cell, ChangeSet, ConnectionConfig, FetchRequest, ForeignKeyInfo, QueryResult } from "./api";
 
 type Table = { columns: { name: string; dataType: string; nullable: boolean; isPrimaryKey: boolean }[]; rows: Cell[][] };
 
@@ -23,6 +23,25 @@ const tables: Record<string, Table> = {
       JSON.stringify({ tier: i % 7 === 0 ? "gold" : "basic" }),
     ]),
   },
+  countries: {
+    columns: [
+      { name: "code", dataType: "text", nullable: false, isPrimaryKey: true },
+      { name: "name", dataType: "text", nullable: false, isPrimaryKey: false },
+    ],
+    rows: [["NO", "Norway"], ["SE", "Sweden"], ["DK", "Denmark"], ["FI", "Finland"], ["IS", "Iceland"]],
+  },
+  orders: {
+    columns: [
+      { name: "id", dataType: "integer", nullable: false, isPrimaryKey: true },
+      { name: "customer_id", dataType: "integer", nullable: true, isPrimaryKey: false },
+      { name: "total", dataType: "numeric", nullable: false, isPrimaryKey: false },
+    ],
+    rows: Array.from({ length: 3000 }, (_, i) => [
+      String(i + 1),
+      i % 50 === 0 ? null : String(((i * 7) % 1234) + 1),
+      ((i * 37) % 500 + 9.95).toFixed(2),
+    ]),
+  },
   audit_log: {
     columns: [
       { name: "at", dataType: "timestamptz", nullable: false, isPrimaryKey: false },
@@ -31,6 +50,17 @@ const tables: Record<string, Table> = {
     rows: [["2026-10-01 10:00:00+00", "login"], ["2026-10-01 10:05:00+00", "logout"]],
   },
 };
+
+const foreignKeys: ForeignKeyInfo[] = [
+  {
+    name: "orders_customer_id_fkey", schema: "public", table: "orders", columns: ["customer_id"],
+    parentSchema: "public", parentTable: "customers", parentColumns: ["id"], onDelete: "CASCADE",
+  },
+  {
+    name: "customers_country_fkey", schema: "public", table: "customers", columns: ["country"],
+    parentSchema: "public", parentTable: "countries", parentColumns: ["code"], onDelete: "NO ACTION",
+  },
+];
 
 let connections: ConnectionConfig[] = [];
 /** Open sessions' connections, so read-only ones can refuse writes. */
@@ -114,7 +144,9 @@ const handlers: Record<string, (a: any) => unknown> = {
   list_schemas: () => ["public", "analytics"],
   list_tables: () => [
     { name: "audit_log", kind: "table" },
+    { name: "countries", kind: "table" },
     { name: "customers", kind: "table" },
+    { name: "orders", kind: "table" },
     { name: "active_customers", kind: "view" },
   ],
   table_columns: ({ table }) => (tables[table] ?? tables.customers).columns.map((c) => ({ ...c, default: null })),
@@ -153,6 +185,10 @@ const handlers: Record<string, (a: any) => unknown> = {
       cascadedRows: 8 * n,
     };
   },
+  table_foreign_keys: ({ table }) => ({
+    outgoing: foreignKeys.filter((f) => f.table === table),
+    incoming: foreignKeys.filter((f) => f.parentTable === table),
+  }),
   preview_changes: ({ changes }) => changes.changes.map((c: { kind: string }) => `-- ${c.kind} ${JSON.stringify(c)}`),
   commit_changes: ({ sessionId, changes }) => {
     if (sessions.get(sessionId)?.readOnly) throw "this connection is read-only";

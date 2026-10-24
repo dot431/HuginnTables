@@ -136,6 +136,10 @@ impl Session {
         self.browser().await.schema_columns(schema).await
     }
 
+    pub async fn table_foreign_keys(&self, schema: &str, table: &str) -> Result<TableForeignKeys> {
+        self.browser().await.table_foreign_keys(schema, table).await
+    }
+
     // ---- browsing & editing --------------------------------------------
 
     pub async fn fetch_rows(&self, req: &FetchRequest) -> Result<QueryResult> {

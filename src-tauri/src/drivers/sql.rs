@@ -34,6 +34,19 @@ fn rows_of(results: Vec<QueryResult>) -> Vec<Vec<Cell>> {
     results.into_iter().find(|r| r.has_rows).map(|r| r.rows).unwrap_or_default()
 }
 
+fn foreign_key_info(fk: &ForeignKey) -> ForeignKeyInfo {
+    ForeignKeyInfo {
+        name: fk.name.clone(),
+        schema: fk.schema.clone(),
+        table: fk.table.clone(),
+        columns: fk.columns.clone(),
+        parent_schema: fk.parent_schema.clone(),
+        parent_table: fk.parent_table.clone(),
+        parent_columns: fk.parent_columns.clone(),
+        on_delete: fk.on_delete.clone(),
+    }
+}
+
 pub async fn engine(cfg: &ConnectionConfig, driver: Arc<dyn Driver>, dialect: Dialect) -> Result<Engine> {
     let one = |sql: &'static str| {
         let driver = driver.clone();
@@ -245,6 +258,20 @@ impl Browser for SqlBrowser {
             cascaded_rows += if steps.len() > 1 { self.count(&distinct(steps)).await? } else { rows };
         }
         Ok(DeleteImpact { references, cascaded_rows })
+    }
+
+    async fn table_foreign_keys(&self, schema: &str, table: &str) -> Result<TableForeignKeys> {
+        let fks = ForeignKey::from_rows(rows_of(self.query(&self.dialect.foreign_keys_sql(schema)).await?));
+        let mut out = TableForeignKeys::default();
+        for fk in &fks {
+            if self.dialect.same_table((&fk.schema, &fk.table), (schema, table)) {
+                out.outgoing.push(foreign_key_info(fk));
+            }
+            if self.dialect.same_table((&fk.parent_schema, &fk.parent_table), (schema, table)) {
+                out.incoming.push(foreign_key_info(fk));
+            }
+        }
+        Ok(out)
     }
 
     async fn preview_changes(&self, set: &ChangeSet) -> Result<Vec<String>> {

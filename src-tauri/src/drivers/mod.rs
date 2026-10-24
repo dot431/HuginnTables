@@ -65,6 +65,10 @@ pub trait Browser: Send + Sync {
     async fn delete_references(&self, _set: &ChangeSet) -> Result<DeleteImpact> {
         Ok(DeleteImpact::default())
     }
+    /// The foreign keys from and to a table. Engines without them have none.
+    async fn table_foreign_keys(&self, _schema: &str, _table: &str) -> Result<TableForeignKeys> {
+        Ok(TableForeignKeys::default())
+    }
     async fn preview_changes(&self, set: &ChangeSet) -> Result<Vec<String>>;
     async fn commit_changes(&self, set: &ChangeSet) -> Result<u64>;
 }

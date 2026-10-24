@@ -263,3 +263,29 @@ pub struct DeleteImpact {
     /// can overlap when a table is reached along several paths).
     pub cascaded_rows: u64,
 }
+
+/// A foreign key constraint: `columns` of `table` point at `parent_columns`
+/// of `parent_table`, pairwise in key order.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub parent_schema: String,
+    pub parent_table: String,
+    pub parent_columns: Vec<String>,
+    /// "NO ACTION", "RESTRICT", "CASCADE", "SET NULL" or "SET DEFAULT".
+    pub on_delete: String,
+}
+
+/// The foreign keys around one table. A self-reference is in both lists.
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TableForeignKeys {
+    /// The table's own keys, pointing at other tables.
+    pub outgoing: Vec<ForeignKeyInfo>,
+    /// Other tables' keys pointing at this table.
+    pub incoming: Vec<ForeignKeyInfo>,
+}

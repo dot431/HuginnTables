@@ -387,6 +387,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 table.plain { border-collapse: collapse; width: 100%; }
 table.plain th, table.plain td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 table.plain th { font-weight: 600; color: var(--text-muted); font-size: 12px; position: sticky; top: 0; background: var(--bg); }
+table.plain tr.clickable { cursor: pointer; }
+table.plain tr.clickable:hover td { background: var(--bg-hover); }
 .pk { color: var(--warning); font-weight: 700; font-size: 11px; }
 
 /* ---------- query tab ---------- */

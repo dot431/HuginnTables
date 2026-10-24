@@ -146,6 +146,27 @@ export interface DeleteImpact {
   cascadedRows: number;
 }
 
+/** A foreign key: `columns` of `table` point at `parentColumns` of `parentTable`, pairwise. */
+export interface ForeignKeyInfo {
+  name: string;
+  schema: string;
+  table: string;
+  columns: string[];
+  parentSchema: string;
+  parentTable: string;
+  parentColumns: string[];
+  /** "NO ACTION", "RESTRICT", "CASCADE", "SET NULL" or "SET DEFAULT". */
+  onDelete: string;
+}
+
+/** The foreign keys around one table; a self-reference is in both lists. */
+export interface TableForeignKeys {
+  /** The table's own keys, pointing at other tables. */
+  outgoing: ForeignKeyInfo[];
+  /** Other tables' keys pointing at this table. */
+  incoming: ForeignKeyInfo[];
+}
+
 export const api = {
   listConnections: () => invoke<ConnectionConfig[]>("list_connections"),
   saveConnection: (config: ConnectionConfig) => invoke<ConnectionConfig>("save_connection", { config }),
@@ -175,6 +196,8 @@ export const api = {
     invoke<string[]>("preview_changes", { sessionId, changes }),
   commitChanges: (sessionId: string, changes: ChangeSet) =>
     invoke<number>("commit_changes", { sessionId, changes }),
+  tableForeignKeys: (sessionId: string, schema: string, table: string) =>
+    invoke<TableForeignKeys>("table_foreign_keys", { sessionId, schema, table }),
 };
 
 export const DEFAULT_PORTS: Record<DriverKind, number> = {

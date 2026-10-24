@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact } from "../lib/api";
+import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact, ForeignKeyInfo, TableForeignKeys } from "../lib/api";
 import * as S from "../lib/staging";
 import { DataGrid } from "./DataGrid";
 import { FilterBar, FilterState } from "./FilterBar";
+import { keyFilter, openParentLabel, ReferencedBy } from "./ForeignKeyNav";
 import { ConfirmStatements } from "./Safety";
 import { ContextMenu, MenuState, Modal, toast } from "./ui";
 
@@ -38,6 +39,10 @@ export function TableTab(props: {
   active: boolean;
   onPendingChange: (pending: number) => void;
   onOpenQuery: (sql: string) => void;
+  /** Rows to show first; the filter bar opens when it has rules. */
+  initialFilter?: FilterState;
+  /** Opens a table in a new tab, showing only the rows `filter` selects. */
+  onOpenTable?: (schema: string, table: string, filter: FilterState) => void;
 }) {
   const { sessionId, schema, table } = props;
   const [view, setView] = useState<"data" | "structure">("data");
@@ -49,8 +54,8 @@ export function TableTab(props: {
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [sort, setSort] = useState<FetchRequest["sort"]>(null);
-  const [filter, setFilter] = useState<FilterState>({ filters: [], rawWhere: "" });
-  const [showFilters, setShowFilters] = useState(false);
+  const [filter, setFilter] = useState<FilterState>(props.initialFilter ?? { filters: [], rawWhere: "" });
+  const [showFilters, setShowFilters] = useState(!!(props.initialFilter?.filters.length || props.initialFilter?.rawWhere));
   const [staging, setStaging] = useState<S.Staging>(S.emptyStaging);
   const [selectedRow, setSelectedRow] = useState<number | undefined>();
   const [showDetail, setShowDetail] = useState(false);
@@ -62,12 +67,16 @@ export function TableTab(props: {
   const loadSeq = useRef(0);
   const [loadedSeq, setLoadedSeq] = useState(0);
   const [reveal, setReveal] = useState<{ row: number }>();
+  const [foreignKeys, setForeignKeys] = useState<TableForeignKeys>({ outgoing: [], incoming: [] });
+  const [referencedBy, setReferencedBy] = useState<number | null>(null);
 
   const rows = result?.rows ?? [];
   const columns = useMemo(() => result?.columns.map((c) => c.name) ?? structure.map((c) => c.name), [result, structure]);
   const primaryKey = useMemo(() => structure.filter((c) => c.isPrimaryKey).map((c) => c.name), [structure]);
   const pending = S.pendingCount(staging);
   const editable = !props.readOnly;
+  const navigable = !!props.onOpenTable && HAS_FOREIGN_KEYS.includes(props.driver);
+  const fkColumns = useMemo(() => new Set(foreignKeys.outgoing.flatMap((fk) => fk.columns)), [foreignKeys]);
 
   useEffect(() => props.onPendingChange(pending), [pending]);
 
@@ -102,6 +111,13 @@ export function TableTab(props: {
     }
   }, [request, sessionId, schema, table, structure]);
 
+  const loadForeignKeys = useCallback(() => {
+    if (!navigable) return;
+    api.tableForeignKeys(sessionId, schema, table).then(setForeignKeys).catch(() => {});
+  }, [navigable, sessionId, schema, table]);
+
+  useEffect(() => loadForeignKeys(), [loadForeignKeys]);
+
   // Reload whenever paging, sorting or filtering changes.
   useEffect(() => {
     load();
@@ -113,7 +129,7 @@ export function TableTab(props: {
     if (pending === 0 || window.confirm(`Discard ${pending} uncommitted change${pending === 1 ? "" : "s"}?`)) then();
   };
 
-  const refresh = () => guard(() => load(true));
+  const refresh = () => guard(() => (load(true), loadForeignKeys()));
 
   const changeSet = () => S.buildChangeSet(staging, rows, columns, primaryKey, schema, table);
 
@@ -199,6 +215,21 @@ export function TableTab(props: {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  /** The values of `columns` in a row, as currently staged. */
+  const rowValues = (row: number, cols: string[]) =>
+    cols.map((c) => (columns.includes(c) ? S.cellAt(staging, rows, columns.indexOf(c), row).value : undefined));
+
+  /** Opens the row that `fk` points at from `row`, if every key column has a value. */
+  const openParent = (fk: ForeignKeyInfo, row: number) => {
+    const f = keyFilter(fk.parentColumns, rowValues(row, fk.columns));
+    if (f) props.onOpenTable?.(fk.parentSchema, fk.parentTable, f);
+  };
+
+  const onMetaClick = (col: number, row: number) => {
+    const fk = foreignKeys.outgoing.find((k) => k.columns.includes(columns[col]));
+    if (fk) openParent(fk, row);
+  };
+
   const onContextMenu = (col: number, row: number, x: number, y: number, selected: number[]) => {
     const { value } = S.cellAt(staging, rows, col, row);
     const colName = columns[col];
@@ -231,6 +262,23 @@ export function TableTab(props: {
             });
           },
         },
+        ...(navigable
+          ? [
+              { separator: true, label: "" },
+              ...foreignKeys.outgoing
+                .filter((fk) => fk.columns.includes(colName))
+                .map((fk) => {
+                  const values = rowValues(row, fk.columns);
+                  return {
+                    label: openParentLabel(fk, values),
+                    shortcut: "⌘-click",
+                    disabled: !keyFilter(fk.parentColumns, values),
+                    action: () => openParent(fk, row),
+                  };
+                }),
+              { label: "Referenced by…", disabled: !foreignKeys.incoming.length || row >= rows.length, action: () => setReferencedBy(row) },
+            ]
+          : []),
         { separator: true, label: "" },
         { label: `Delete row${many}`, shortcut: "⌫", disabled: !editable, action: () => setStaging((s) => S.toggleDelete(s, rows.length, selected)) },
         { label: `Revert changes${many}`, disabled: !pending, action: () => setStaging((s) => S.revertRows(s, rows.length, selected)) },
@@ -300,7 +348,10 @@ export function TableTab(props: {
                 layoutKey={`${schema}.${table}`}
                 selectionKey={loadedSeq}
                 reveal={reveal}
-                columns={columns.map((name) => ({ name, badge: primaryKey.includes(name) ? "🔑" : undefined }))}
+                columns={columns.map((name) => ({
+                  name,
+                  badge: (primaryKey.includes(name) ? "🔑" : "") + (fkColumns.has(name) ? "↗" : "") || undefined,
+                }))}
                 rowCount={rows.length + staging.inserted.length}
                 getValue={getValue}
                 editable={editable}
@@ -324,6 +375,7 @@ export function TableTab(props: {
                 }
                 onContextMenu={onContextMenu}
                 onSelectRow={setSelectedRow}
+                onCellMetaClick={navigable ? onMetaClick : undefined}
               />
             )}
             {loading && (
@@ -437,6 +489,17 @@ export function TableTab(props: {
           <b>{table}</b> is on a production connection. These statements run{" "}
           {props.driver === "redis" ? "atomically" : props.driver === "mongodb" ? "one at a time" : "in a single transaction"}:
         </ConfirmStatements>
+      )}
+      {referencedBy !== null && (
+        <ReferencedBy
+          sessionId={sessionId}
+          table={table}
+          incoming={foreignKeys.incoming}
+          // References point at the stored values, not staged edits.
+          valueOf={(c) => (columns.includes(c) ? rows[referencedBy]?.[columns.indexOf(c)] : undefined)}
+          onOpen={(fk, f) => (setReferencedBy(null), props.onOpenTable?.(fk.schema, fk.table, f))}
+          onClose={() => setReferencedBy(null)}
+        />
       )}
     </div>
   );
