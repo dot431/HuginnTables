@@ -144,6 +144,16 @@ async fn schema_columns(
 }
 
 #[tauri::command]
+async fn table_foreign_keys(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> CmdResult<TableForeignKeys> {
+    state.session(&session_id).await?.table_foreign_keys(&schema, &table).await.map_err(err)
+}
+
+#[tauri::command]
 async fn fetch_rows(
     state: State<'_, AppState>,
     session_id: String,
@@ -282,6 +292,7 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
             delete_references,
             preview_changes,
             commit_changes,
+            table_foreign_keys,
         ])
 }
 

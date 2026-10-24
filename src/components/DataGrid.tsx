@@ -126,6 +126,8 @@ const HUGINN_DARK: Partial<Theme> = {
   linkColor: "#8ccbcf",
 };
 
+const IS_MAC = navigator.platform.startsWith("Mac");
+
 const STATE_BG = {
   light: { edited: "#fff3c4", inserted: "#dcf2e4", deleted: "#f8dcda" },
   dark: { edited: "#4a4224", inserted: "#24402f", deleted: "#4d2a28" },
@@ -166,6 +168,8 @@ export function DataGrid(props: {
   onHeaderClick?: (col: number) => void;
   onContextMenu?: (col: number, row: number, x: number, y: number, selectedRows: number[]) => void;
   onSelectRow?: (row: number | undefined) => void;
+  /** ⌘-click on a cell (Ctrl-click off macOS, where Ctrl-click is a right-click). */
+  onCellMetaClick?: (col: number, row: number) => void;
   /** Bump to reset widths, e.g. when a different table is loaded. */
   layoutKey?: string;
   /** Bump to clear the selection, e.g. after the rows were reloaded. */
@@ -297,6 +301,9 @@ export function DataGrid(props: {
       }}
       onColumnResize={(col, width) => setWidths((w) => ({ ...w, [col.id as string]: width }))}
       onHeaderClicked={(col) => props.onHeaderClick?.(col)}
+      onCellClicked={([col, row], e) => {
+        if (IS_MAC ? e.metaKey : e.ctrlKey) props.onCellMetaClick?.(col, row);
+      }}
       onCellContextMenu={([col, row], e) => {
         e.preventDefault();
         const inSelection =

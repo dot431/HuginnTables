@@ -415,7 +415,7 @@ impl Dialect {
     }
 
     /// SQLite matches table names without regard to case.
-    fn same_table(&self, a: (&str, &str), b: (&str, &str)) -> bool {
+    pub fn same_table(&self, a: (&str, &str), b: (&str, &str)) -> bool {
         match self.0 {
             SqlEngine::Sqlite => a.0.eq_ignore_ascii_case(b.0) && a.1.eq_ignore_ascii_case(b.1),
             _ => a == b,

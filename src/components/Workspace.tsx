@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, DriverKind, errorMessage, SessionInfo, TableInfo } from "../lib/api";
+import { FilterState } from "./FilterBar";
 import { QueryTab } from "./QueryTab";
 import { TableTab } from "./TableTab";
 import { ContextMenu, DriverBadge, MenuState, toast, useDragSize } from "./ui";
 
 type Tab =
-  | { id: number; kind: "table"; schema: string; table: string; readOnly: boolean }
+  | { id: number; kind: "table"; schema: string; table: string; readOnly: boolean; filter?: FilterState }
   | { id: number; kind: "query"; title: string; initialSql?: string; slot: number };
 
 const KIND_ICON: Record<TableInfo["kind"], string> = {
@@ -92,6 +93,15 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
     }
     const id = nextId.current++;
     setTabs((ts) => [...ts, { id, kind: "table", schema, table: t.name, readOnly: info.readOnly || !EDITABLE_KINDS.includes(t.kind) }]);
+    setActiveTab(id);
+  };
+
+  /** Opens a table in a new tab showing only the rows `filter` selects, e.g. to follow a foreign key. */
+  const openFilteredTable = (tableSchema: string, table: string, filter: FilterState) => {
+    // Tables in other schemas aren't listed; foreign keys point at tables, so assume one.
+    const kind = (tableSchema === schema && tables.find((t) => t.name === table)?.kind) || "table";
+    const id = nextId.current++;
+    setTabs((ts) => [...ts, { id, kind: "table", schema: tableSchema, table, readOnly: info.readOnly || !EDITABLE_KINDS.includes(kind), filter }]);
     setActiveTab(id);
   };
 
@@ -346,6 +356,8 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
                 active={props.active && t.id === activeTab}
                 onPendingChange={(n) => setPending((p) => (p[t.id] === n ? p : { ...p, [t.id]: n }))}
                 onOpenQuery={openQuery}
+                initialFilter={t.filter}
+                onOpenTable={openFilteredTable}
               />
             ) : (
               <QueryTab
