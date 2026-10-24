@@ -15,10 +15,21 @@ concurrency:
 jobs:
   macos:
     runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
+    env:
+      GATEKEEPER_NOTE: |
 
-      - uses: actions/setup-node@v4
+        **First launch:** this build isn't notarized by Apple, so macOS blocks it the first time with "Apple could not verify…". To allow it:
+        1. Try to open HuginnTables once, then click **Done**.
+        2. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the HuginnTables message, then confirm.
+
+        Or, in Terminal:
+        ```
+        xattr -dr com.apple.quarantine /Applications/HuginnTables.app
+        ```
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -36,7 +47,48 @@ jobs:
 
       - run: npm ci
 
-      # Ad-hoc signed (bundle.macOS.signingIdentity = "-"), not notarized.
+      # With the Developer ID secrets set, sign with that certificate and notarize.
+      # Without them, fall back to the ad-hoc signature from tauri.conf.json.
+      - name: Import Developer ID certificate
+        id: signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::warning::Developer ID secrets not set; building an ad-hoc signed app that macOS will warn about."
+            echo "notarized=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for v in APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || { echo "::error::Secret $v is missing"; exit 1; }
+          done
+
+          KEYCHAIN=build.keychain
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN"
+          security import certificate.p12 -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          rm certificate.p12
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          [ -n "$IDENTITY" ] || { echo "::error::No Developer ID Application identity in APPLE_CERTIFICATE"; exit 1; }
+          echo "Signing as $IDENTITY"
+          {
+            echo "APPLE_SIGNING_IDENTITY=$IDENTITY"
+            echo "APPLE_ID=$APPLE_ID"
+            echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+          } >> "$GITHUB_ENV"
+          echo "notarized=true" >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -51,12 +103,4 @@ jobs:
             Built from ${{ github.sha }}.
 
             **Install:** open the `.dmg` and drag HuginnTables into Applications.
-
-            **First launch:** the app isn't notarized by Apple, so macOS blocks it the first time with "Apple could not verify…". To allow it:
-            1. Try to open HuginnTables once, then click **Done**.
-            2. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the HuginnTables message, then confirm.
-
-            Or, in Terminal:
-            ```
-            xattr -dr com.apple.quarantine /Applications/HuginnTables.app
-            ```
+            ${{ steps.signing.outputs.notarized != 'true' && env.GATEKEEPER_NOTE || '' }}
