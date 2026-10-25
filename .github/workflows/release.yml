@@ -15,6 +15,8 @@ concurrency:
 jobs:
   macos:
     runs-on: macos-latest
+    # Notarization normally takes minutes; don't let a stuck Apple queue burn 6 hours.
+    timeout-minutes: 60
     env:
       GATEKEEPER_NOTE: |
 
