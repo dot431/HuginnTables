@@ -247,7 +247,14 @@ const handlers: Record<string, (a: any) => unknown> = {
     return n;
   },
   write_text_file: ({ path, contents }) => void console.info(`mock backend: wrote ${contents.length} chars to ${path}`),
+  read_text_file: ({ path }) =>
+    path.endsWith(".json")
+      ? JSON.stringify([{ name: "Imported A", email: "a@example.com", country: "NO", tier: 1 }, { name: "Imported B", email: null }])
+      : path.endsWith(".sql")
+        ? "INSERT INTO customers (name) VALUES ('Imported');\n"
+        : "name,email,country\nImported A,a@example.com,NO\nImported B,NULL,SE\n",
   "plugin:dialog|save": ({ options }) => `/tmp/${options?.defaultPath ?? "export"}`,
+  "plugin:dialog|open": () => window.prompt("mock backend: file to open", "/tmp/import.csv"),
 };
 
 export function installMockBackend() {

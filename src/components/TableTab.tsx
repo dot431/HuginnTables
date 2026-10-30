@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact, ForeignKeyInfo, TableForeignKeys } from "../lib/api";
-import { pastedRows } from "../lib/formats";
+import { jsonRows, pastedRows } from "../lib/formats";
 import * as S from "../lib/staging";
 import type { TableView } from "../lib/workspaceState";
 import { useColumnLayout } from "../lib/columnLayout";
@@ -215,6 +216,53 @@ export function TableTab(props: {
     toast(`Staged ${n} new row${n === 1 ? "" : "s"}, matched ${byName ? "by column name" : "by position"}`, "success");
   };
 
+  /** CSV and JSON files become staged inserts; a SQL script opens in a query tab to review and run. */
+  const importFile = async () => {
+    const extensions = isSql(props.driver) ? ["csv", "tsv", "txt", "json", "sql"] : ["csv", "tsv", "txt", "json"];
+    let path: string | null;
+    let text: string;
+    try {
+      path = await open({ filters: [{ name: "Data file", extensions }] });
+      if (!path) return;
+      text = await api.readTextFile(path);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+      return;
+    }
+    const file = path.split(/[\\/]/).pop();
+    const ext = file?.split(".").pop()?.toLowerCase();
+    if (ext === "sql") {
+      props.onOpenQuery(text);
+      toast(`Opened ${file} in a query tab. Run it with ⇧⌘↵`, "success");
+      return;
+    }
+    if (!text.trim()) {
+      toast(`Nothing to import: ${file} is empty`);
+      return;
+    }
+    if (ext !== "json") {
+      pasteRows(text);
+      return;
+    }
+    let parsed: ReturnType<typeof jsonRows>;
+    try {
+      parsed = jsonRows(text, columns);
+    } catch (e) {
+      toast(`Couldn't import ${file}.\n${errorMessage(e)}`, "error");
+      return;
+    }
+    if (!parsed.rows.length) {
+      toast(`Nothing to import: ${file} has no rows`);
+      return;
+    }
+    setReveal({ row: rows.length + staging.inserted.length });
+    setStaging((s) => S.addRows(s, parsed.rows));
+    setView("data");
+    const n = parsed.rows.length;
+    const skipped = parsed.unknown.length ? `; ignored ${parsed.unknown.join(", ")}` : "";
+    toast(`Staged ${n} new row${n === 1 ? "" : "s"} from ${file}${skipped}`, "success");
+  };
+
   const pasteFromClipboard = async () => {
     if (!editable || !columns.length) return;
     let text: string;
@@ -412,6 +460,11 @@ export function TableTab(props: {
         <button onClick={() => setExporting(true)} disabled={!columns.length} title="Export rows to a file">
           Export…
         </button>
+        {editable && (
+          <button onClick={importFile} disabled={!columns.length} title="Import rows from a CSV or JSON file, or open a SQL script">
+            Import…
+          </button>
+        )}
         {view === "data" && columns.length > 0 && (
           <ColumnsButton columns={columns} hidden={layout.hidden} frozen={layout.frozen} onHidden={setHidden} onFrozen={setFrozen} />
         )}

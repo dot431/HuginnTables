@@ -82,6 +82,11 @@ pub async fn write_text_file(path: String, contents: String) -> CmdResult<()> {
     tokio::fs::write(&path, contents).await.map_err(|e| format!("Couldn't write {path}: {e}"))
 }
 
+#[tauri::command]
+pub async fn read_text_file(path: String) -> CmdResult<String> {
+    tokio::fs::read_to_string(&path).await.map_err(|e| format!("Couldn't read {path}: {e}"))
+}
+
 pub(crate) async fn write_table(session: &Session, req: &ExportRequest, format: ExportFormat, path: &str) -> Result<u64> {
     let driver = session.info().await.driver;
     let quoting = Quoting::for_driver(driver);

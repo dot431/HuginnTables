@@ -186,3 +186,28 @@ export function pastedRows(text: string, columns: string[]): { rows: (Cell | und
   });
   return { rows, byName };
 }
+
+/**
+ * Lines up a JSON array of objects (as Export writes it) with the table's
+ * columns by key, case-insensitively. Missing keys are left to the column's
+ * DEFAULT; numbers and booleans become text, nested values JSON. Returns the
+ * keys that matched no column.
+ */
+export function jsonRows(text: string, columns: string[]): { rows: (Cell | undefined)[][]; unknown: string[] } {
+  const data: unknown = JSON.parse(text);
+  if (!Array.isArray(data) || data.some((d) => typeof d !== "object" || d === null || Array.isArray(d))) {
+    throw new Error("Expected a JSON array of objects, one per row.");
+  }
+  const lower = columns.map((c) => c.toLowerCase());
+  const unknown = new Set<string>();
+  const rows = (data as Record<string, unknown>[]).map((obj) => {
+    const out: (Cell | undefined)[] = new Array(columns.length).fill(undefined);
+    for (const [key, v] of Object.entries(obj)) {
+      const col = lower.indexOf(key.toLowerCase());
+      if (col < 0) unknown.add(key);
+      else out[col] = v === null ? null : typeof v === "object" ? JSON.stringify(v) : String(v);
+    }
+    return out;
+  });
+  return { rows, unknown: [...unknown] };
+}
