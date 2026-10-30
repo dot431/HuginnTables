@@ -3,10 +3,12 @@
 //! writer for results the UI already holds.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Runtime, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::oneshot;
 
 use crate::dialect::{Dialect, SqlEngine};
 use crate::drivers::bigquery;
@@ -82,9 +84,30 @@ pub async fn write_text_file(path: String, contents: String) -> CmdResult<()> {
     tokio::fs::write(&path, contents).await.map_err(|e| format!("Couldn't write {path}: {e}"))
 }
 
+#[derive(Serialize)]
+pub struct PickedFile {
+    name: String,
+    contents: String,
+}
+
+/// Asks the user for a file and returns its text. The path is chosen here,
+/// never by the UI, so the renderer can only read files the user picked.
 #[tauri::command]
-pub async fn read_text_file(path: String) -> CmdResult<String> {
-    tokio::fs::read_to_string(&path).await.map_err(|e| format!("Couldn't read {path}: {e}"))
+pub async fn pick_text_file<R: Runtime>(app: AppHandle<R>, extensions: Vec<String>) -> CmdResult<Option<PickedFile>> {
+    let (tx, rx) = oneshot::channel();
+    let extensions: Vec<&str> = extensions.iter().map(String::as_str).collect();
+    app.dialog().file().add_filter("Data file", &extensions).pick_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let Some(picked) = rx.await.map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let contents = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(Some(PickedFile { name, contents }))
 }
 
 pub(crate) async fn write_table(session: &Session, req: &ExportRequest, format: ExportFormat, path: &str) -> Result<u64> {

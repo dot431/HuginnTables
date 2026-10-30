@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { api, Cell, ColumnInfo, DriverKind, errorMessage, FetchRequest, isSql, QueryResult, DeleteImpact, ForeignKeyInfo, TableForeignKeys } from "../lib/api";
 import { jsonRows, pastedRows } from "../lib/formats";
 import * as S from "../lib/staging";
@@ -219,18 +218,16 @@ export function TableTab(props: {
   /** CSV and JSON files become staged inserts; a SQL script opens in a query tab to review and run. */
   const importFile = async () => {
     const extensions = isSql(props.driver) ? ["csv", "tsv", "txt", "json", "sql"] : ["csv", "tsv", "txt", "json"];
-    let path: string | null;
-    let text: string;
+    let picked: Awaited<ReturnType<typeof api.pickTextFile>>;
     try {
-      path = await open({ filters: [{ name: "Data file", extensions }] });
-      if (!path) return;
-      text = await api.readTextFile(path);
+      picked = await api.pickTextFile(extensions);
     } catch (e) {
       toast(errorMessage(e), "error");
       return;
     }
-    const file = path.split(/[\\/]/).pop();
-    const ext = file?.split(".").pop()?.toLowerCase();
+    if (!picked) return;
+    const { name: file, contents: text } = picked;
+    const ext = file.split(".").pop()?.toLowerCase();
     if (ext === "sql") {
       props.onOpenQuery(text);
       toast(`Opened ${file} in a query tab. Run it with ⇧⌘↵`, "success");
