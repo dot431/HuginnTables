@@ -3,10 +3,14 @@
 //! writer for results the UI already holds.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
-use tauri::State;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Runtime, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::oneshot;
 
 use crate::dialect::{Dialect, SqlEngine};
 use crate::drivers::bigquery;
@@ -57,18 +61,58 @@ impl ExportRequest {
     }
 }
 
-/// Writes the rows `request` selects to `path` and returns how many there were.
+/// What the save dialog suggests: a file name and a single-extension filter.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTarget {
+    file_name: String,
+    filter_name: String,
+    extension: String,
+}
+
+#[derive(Serialize)]
+pub struct Saved {
+    name: String,
+    rows: u64,
+}
+
+/// Asks where to save. The path is chosen here, never by the UI, so the
+/// renderer can only write (or remove) files the user picked.
+async fn pick_save_path<R: Runtime>(app: &AppHandle<R>, target: &SaveTarget) -> CmdResult<Option<PathBuf>> {
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&target.file_name)
+        .add_filter(&target.filter_name, &[target.extension.as_str()])
+        .save_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    match rx.await.map_err(|e| e.to_string())? {
+        Some(picked) => picked.into_path().map(Some).map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Asks where to save, then writes the rows `request` selects there.
 #[tauri::command]
-pub async fn export_table(
+pub async fn export_table<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     session_id: String,
     request: ExportRequest,
     format: ExportFormat,
-    path: String,
-) -> CmdResult<u64> {
+    target: SaveTarget,
+) -> CmdResult<Option<Saved>> {
     let session = state.session(&session_id).await?;
-    match write_table(&session, &request, format, &path).await {
-        Ok(n) => Ok(n),
+    let Some(path) = pick_save_path(&app, &target).await? else {
+        return Ok(None);
+    };
+    match write_table(&session, &request, format, &path.to_string_lossy()).await {
+        Ok(rows) => Ok(Some(Saved { name: file_name(&path), rows })),
         Err(e) => {
             // Don't leave half a file behind.
             let _ = tokio::fs::remove_file(&path).await;
@@ -77,9 +121,16 @@ pub async fn export_table(
     }
 }
 
+/// Asks where to save, then writes `contents` there and returns the file name.
 #[tauri::command]
-pub async fn write_text_file(path: String, contents: String) -> CmdResult<()> {
-    tokio::fs::write(&path, contents).await.map_err(|e| format!("Couldn't write {path}: {e}"))
+pub async fn save_text_file<R: Runtime>(app: AppHandle<R>, target: SaveTarget, contents: String) -> CmdResult<Option<String>> {
+    let Some(path) = pick_save_path(&app, &target).await? else {
+        return Ok(None);
+    };
+    tokio::fs::write(&path, contents)
+        .await
+        .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+    Ok(Some(file_name(&path)))
 }
 
 pub(crate) async fn write_table(session: &Session, req: &ExportRequest, format: ExportFormat, path: &str) -> Result<u64> {

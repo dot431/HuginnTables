@@ -303,12 +303,12 @@ export function QueryTab(props: {
           title="Export results"
           fileName={guessTable(result.sql)?.replace(/["`[\]]/g, "").split(".").pop() ?? "results"}
           note={result.truncated ? `Only the ${result.rows.length.toLocaleString()} rows shown are exported.` : undefined}
-          onExport={async (format, _scope, path) => {
+          onExport={async (format, _scope, target) => {
             const data = resultData(result);
             const text =
               format === "csv" ? toDelimited(data, ",") : format === "json" ? toJson(data) : toInserts(data, sqlTarget(result));
-            await api.writeTextFile(path, text + "\n");
-            return data.rows.length;
+            const name = await api.saveTextFile(target, text + "\n");
+            return name === null ? null : { name, rows: data.rows.length };
           }}
           onClose={() => setExporting(false)}
         />
