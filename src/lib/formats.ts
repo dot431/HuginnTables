@@ -186,3 +186,43 @@ export function pastedRows(text: string, columns: string[]): { rows: (Cell | und
   });
   return { rows, byName };
 }
+
+/**
+ * Lines up a JSON array of objects (as Export writes it) with the table's
+ * columns by key, case-insensitively. Missing keys are left to the column's
+ * DEFAULT; numbers and booleans become text, nested values JSON. Numbers keep
+ * their source text where the engine exposes it, and a number a double can't
+ * hold exactly is refused rather than rounded. Returns the keys that matched
+ * no column.
+ */
+export function jsonRows(text: string, columns: string[]): { rows: (Cell | undefined)[][]; unknown: string[] } {
+  const json = JSON as { rawJSON?: (text: string) => unknown; isRawJSON?: (v: unknown) => v is { rawJSON: string } };
+  const data: unknown = JSON.parse(text, (key, v, context?: { source?: string }) => {
+    if (typeof v !== "number") return v;
+    if (json.rawJSON && context?.source !== undefined) return json.rawJSON(context.source);
+    if (Number.isInteger(v) && !Number.isSafeInteger(v)) {
+      throw new Error(`"${key}" holds a number too large to import exactly; quote it as a string.`);
+    }
+    return v;
+  });
+  const cell = (v: unknown): Cell =>
+    v === null ? null : typeof v !== "object" ? String(v) : json.isRawJSON?.(v) ? v.rawJSON : JSON.stringify(v);
+  if (!Array.isArray(data) || data.some((d) => typeof d !== "object" || d === null || Array.isArray(d))) {
+    throw new Error("Expected a JSON array of objects, one per row.");
+  }
+  const lower = columns.map((c) => c.toLowerCase());
+  const unknown = new Set<string>();
+  const rows = (data as Record<string, unknown>[]).map((obj) => {
+    const out: (Cell | undefined)[] = new Array(columns.length).fill(undefined);
+    for (const [key, v] of Object.entries(obj)) {
+      const col = lower.indexOf(key.toLowerCase());
+      if (col < 0) unknown.add(key);
+      else out[col] = cell(v);
+    }
+    return out;
+  });
+  if (rows.length && rows.every((r) => r.every((v) => v === undefined))) {
+    throw new Error(`No key matches a column of this table${unknown.size ? ` (found ${[...unknown].join(", ")})` : ""}.`);
+  }
+  return { rows, unknown: [...unknown] };
+}

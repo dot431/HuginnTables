@@ -236,6 +236,8 @@ export const api = {
   exportTable: (sessionId: string, request: ExportRequest, format: ExportFormat, path: string) =>
     invoke<number>("export_table", { sessionId, request, format, path }),
   writeTextFile: (path: string, contents: string) => invoke<void>("write_text_file", { path, contents }),
+  pickTextFile: (extensions: string[]) =>
+    invoke<{ name: string; contents: string } | null>("pick_text_file", { extensions }),
 };
 
 export const DEFAULT_PORTS: Record<DriverKind, number> = {

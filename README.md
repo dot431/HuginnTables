@@ -23,7 +23,11 @@ BigQuery, built with Tauri 2 (Rust) and React.
 - **SQL editor** — CodeMirror with dialect highlighting and schema-aware autocomplete. ⌘↵ runs the
   statement under the cursor (or the selection), ⇧⌘↵ runs everything, ⌘. cancels on the server.
   Multiple result sets, errors stop the batch, editor contents are remembered per connection.
-- **Tabs** — ⌘T new query, ⌘W close, ⌘1…9 / ⌃Tab to switch; several connections open at once.
+- **Import & export** — export a table or result to CSV, JSON or SQL INSERTs. Import a CSV or
+  JSON file into a table as staged inserts (columns matched by name); a `.sql` dump opens in a
+  query tab to review and run.
+- **Tabs** — ⌘T new query, ⌘W closes the tab (or the connection when none is open), ⌘1…9 / ⌃Tab
+  to switch; several connections open at once.
 - **Redis** — databases `db0…`, keys grouped by prefix (`user:*`), key/type/TTL/value grid with
   hashes, lists, sets and sorted sets as JSON; edits (value, TTL, rename, add, delete) commit
   atomically with MULTI/EXEC; a console runs one command per line.
