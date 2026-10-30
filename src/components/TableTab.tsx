@@ -567,14 +567,14 @@ export function TableTab(props: {
           ]}
           initialScope={filter.filters.length || filter.rawWhere || sort ? "view" : "all"}
           note={pending ? "Exports what's in the database; uncommitted changes are left out." : undefined}
-          onExport={(format, scope, path) =>
+          onExport={(format, scope, target) =>
             api.exportTable(
               sessionId,
               scope === "view"
                 ? { schema, table, filters: filter.filters, rawWhere: filter.rawWhere, sort, keyOrder: primaryKey }
                 : { schema, table, filters: [], rawWhere: "", sort: null, keyOrder: primaryKey },
               format,
-              path,
+              target,
             )
           }
           onClose={() => setExporting(false)}

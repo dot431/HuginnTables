@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
-import { errorMessage, ExportFormat } from "../lib/api";
+import { errorMessage, ExportFormat, SaveTarget } from "../lib/api";
 import { COPY_FORMATS, CopyFormat, formatRows, RowData, SqlTarget } from "../lib/formats";
 import { MenuItem, Modal, toast } from "./ui";
 
@@ -32,8 +31,9 @@ const EXPORT_FORMATS: { id: ExportFormat; label: string; ext: string; name: stri
 ];
 
 /**
- * Picks a format (and, for tables, which rows), asks where to save, then runs
- * `onExport`, which returns the number of rows written.
+ * Picks a format (and, for tables, which rows), then runs `onExport`, which
+ * asks where to save and returns the file name and rows written, or null when
+ * the save dialog was cancelled.
  */
 export function ExportDialog(props: {
   title: string;
@@ -41,7 +41,7 @@ export function ExportDialog(props: {
   scopes?: { id: string; label: string }[];
   initialScope?: string;
   note?: string;
-  onExport: (format: ExportFormat, scope: string, path: string) => Promise<number>;
+  onExport: (format: ExportFormat, scope: string, target: SaveTarget) => Promise<{ name: string; rows: number } | null>;
   onClose: () => void;
 }) {
   const [format, setFormat] = useState<ExportFormat>("csv");
@@ -50,18 +50,12 @@ export function ExportDialog(props: {
 
   const run = async () => {
     const f = EXPORT_FORMATS.find((x) => x.id === format)!;
-    let path: string | null;
-    try {
-      path = await save({ defaultPath: `${props.fileName}.${f.ext}`, filters: [{ name: f.name, extensions: [f.ext] }] });
-    } catch (e) {
-      toast(errorMessage(e), "error");
-      return;
-    }
-    if (!path) return;
     setBusy(true);
     try {
-      const n = await props.onExport(format, scope, path);
-      toast(`Exported ${n.toLocaleString()} row${n === 1 ? "" : "s"} to ${path.split(/[\\/]/).pop()}`, "success");
+      const saved = await props.onExport(format, scope, { fileName: `${props.fileName}.${f.ext}`, filterName: f.name, extension: f.ext });
+      if (!saved) return;
+      const n = saved.rows;
+      toast(`Exported ${n.toLocaleString()} row${n === 1 ? "" : "s"} to ${saved.name}`, "success");
       props.onClose();
     } catch (e) {
       toast(`Export failed.\n${errorMessage(e)}`, "error");

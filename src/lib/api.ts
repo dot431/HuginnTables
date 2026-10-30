@@ -111,6 +111,13 @@ export type ExportRequest = Omit<FetchRequest, "limit" | "offset">;
 
 export type ExportFormat = "csv" | "json" | "sql";
 
+/** What the save dialog suggests; the path itself is picked on the Rust side. */
+export interface SaveTarget {
+  fileName: string;
+  filterName: string;
+  extension: string;
+}
+
 export interface CellValue {
   column: string;
   value: Cell;
@@ -233,9 +240,9 @@ export const api = {
     invoke<string>("table_ddl", { sessionId, schema, table }),
   schemaChangeSql: (sessionId: string, schema: string, table: string, change: SchemaChange) =>
     invoke<string[]>("schema_change_sql", { sessionId, schema, table, change }),
-  exportTable: (sessionId: string, request: ExportRequest, format: ExportFormat, path: string) =>
-    invoke<number>("export_table", { sessionId, request, format, path }),
-  writeTextFile: (path: string, contents: string) => invoke<void>("write_text_file", { path, contents }),
+  exportTable: (sessionId: string, request: ExportRequest, format: ExportFormat, target: SaveTarget) =>
+    invoke<{ name: string; rows: number } | null>("export_table", { sessionId, request, format, target }),
+  saveTextFile: (target: SaveTarget, contents: string) => invoke<string | null>("save_text_file", { target, contents }),
 };
 
 export const DEFAULT_PORTS: Record<DriverKind, number> = {

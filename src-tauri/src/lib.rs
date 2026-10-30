@@ -337,7 +337,7 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
             table_ddl,
             schema_change_sql,
             export::export_table,
-            export::write_text_file,
+            export::save_text_file,
         ])
 }
 
