@@ -250,6 +250,16 @@ const handlers: Record<string, (a: any) => unknown> = {
     console.info(`mock backend: wrote ${contents.length} chars to ${target.fileName}`);
     return target.fileName;
   },
+  pick_text_file: () => {
+    const name = window.prompt("mock backend: file to open", "import.csv");
+    if (!name) return null;
+    const contents = name.endsWith(".json")
+      ? '[{"name": "Imported A", "email": "a@example.com", "id": 90071992547409930, "tier": 1}, {"name": "Imported B", "email": null}]'
+      : name.endsWith(".sql")
+        ? "INSERT INTO customers (name) VALUES ('Imported');\n"
+        : "name,email,country\nImported A,a@example.com,NO\nImported B,NULL,SE\n";
+    return { name, contents };
+  },
 };
 
 export function installMockBackend() {

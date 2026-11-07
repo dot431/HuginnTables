@@ -310,6 +310,7 @@ export function Workspace(props: { session: SessionInfo; color: string; active: 
       } else if (k === "w") {
         e.preventDefault();
         if (activeTab !== null) closeTab(activeTab);
+        else props.onClose();
       } else if (k === "k" && !e.shiftKey) {
         e.preventDefault();
         searchRef.current?.focus();

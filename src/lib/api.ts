@@ -243,6 +243,8 @@ export const api = {
   exportTable: (sessionId: string, request: ExportRequest, format: ExportFormat, target: SaveTarget) =>
     invoke<{ name: string; rows: number } | null>("export_table", { sessionId, request, format, target }),
   saveTextFile: (target: SaveTarget, contents: string) => invoke<string | null>("save_text_file", { target, contents }),
+  pickTextFile: (extensions: string[]) =>
+    invoke<{ name: string; contents: string } | null>("pick_text_file", { extensions }),
 };
 
 export const DEFAULT_PORTS: Record<DriverKind, number> = {
