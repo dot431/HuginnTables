@@ -241,13 +241,25 @@ const handlers: Record<string, (a: any) => unknown> = {
     return `CREATE TABLE ${q(schema)}.${q(table)} (\n${cols.join(",\n")}\n);${extra.join("")}`;
   },
   schema_change_sql: ({ schema, table, change }) => schemaChangeSql(schema, table, change),
-  export_table: ({ request, format, path }) => {
-    const n = select(tables[request.table] ? request : { ...request, table: "customers" }).length;
-    console.info(`mock backend: exported ${n} rows as ${format} to ${path}`);
-    return n;
+  export_table: ({ request, format, target }) => {
+    const rows = select(tables[request.table] ? request : { ...request, table: "customers" }).length;
+    console.info(`mock backend: exported ${rows} rows as ${format} to ${target.fileName}`);
+    return { name: target.fileName, rows };
   },
-  write_text_file: ({ path, contents }) => void console.info(`mock backend: wrote ${contents.length} chars to ${path}`),
-  "plugin:dialog|save": ({ options }) => `/tmp/${options?.defaultPath ?? "export"}`,
+  save_text_file: ({ target, contents }) => {
+    console.info(`mock backend: wrote ${contents.length} chars to ${target.fileName}`);
+    return target.fileName;
+  },
+  pick_text_file: () => {
+    const name = window.prompt("mock backend: file to open", "import.csv");
+    if (!name) return null;
+    const contents = name.endsWith(".json")
+      ? '[{"name": "Imported A", "email": "a@example.com", "id": 90071992547409930, "tier": 1}, {"name": "Imported B", "email": null}]'
+      : name.endsWith(".sql")
+        ? "INSERT INTO customers (name) VALUES ('Imported');\n"
+        : "name,email,country\nImported A,a@example.com,NO\nImported B,NULL,SE\n";
+    return { name, contents };
+  },
 };
 
 export function installMockBackend() {
